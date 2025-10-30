@@ -1,12 +1,11 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import {
   Heart,
   X,
-  Check,
   Truck,
   Shield,
   RotateCcw,
@@ -107,7 +106,7 @@ function normalizeProduct(raw: any): Product {
       : minPrice;
 
   return {
-    _id: raw._id,
+    _id: String(raw._id),
     slug: raw.slug,
     product_code: raw.product_code ?? "",
     product_name: raw.product_name ?? "",
@@ -139,23 +138,29 @@ const isEthnicOnly = (p: Product) => {
 };
 
 /* ---------- Slug ---------- */
-const makeSlug = (p: Product) =>
-  (p.slug ||
-    (p.product_name?.length ? p.product_name : `${p.material}-${p.category}`) +
-      (p.product_code ? `-${p.product_code}` : ""))
+const slugify = (s: string) =>
+  s
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/(^-|-$)+/g, "");
 
-export default function EthnicWearListingPage() {
+const makeSlug = (p: Product) => {
+  if (p.slug) return slugify(p.slug);
+  const base = p.product_name?.length ? p.product_name : `${p.material}-${p.category}`;
+  const withCode = p.product_code ? `${base}-${p.product_code}` : base;
+  return slugify(withCode);
+};
+
+/* =======================================================================================
+   PAGE COMPONENT (default export must be a React component)
+   ======================================================================================= */
+export default function Page() {
   const [productList, setProductList] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [wishlist, setWishlist] = useState<Set<string>>(new Set());
-  const [showCartToast, setShowCartToast] = useState(false);
-  const [addedProductName, setAddedProductName] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  // Filters (single-select for a clean, professional UX)
+  // Filters
   const [priceMin, setPriceMin] = useState(0);
   const [priceMax, setPriceMax] = useState(0);
   const [size, setSize] = useState("");
@@ -163,18 +168,8 @@ export default function EthnicWearListingPage() {
   const [material, setMaterial] = useState("");
 
   // Collapsible filter bar
-  const [collapsed, setCollapsed] = useState(true); // default closed for tight layout
+  const [collapsed, setCollapsed] = useState(true);
   const scrollRef = useRef(0);
-
-  
-
-  const clearFilters = () => {
-    setSize("");
-    setColor("");
-    setMaterial("");
-    setPriceMin(globalMinPrice);
-    setPriceMax(globalMaxPrice);
-  };
 
   // Fetch ethnic-only products
   useEffect(() => {
@@ -183,10 +178,12 @@ export default function EthnicWearListingPage() {
         setLoading(true);
         const r = await fetch("/api/products?category=ethnic", { cache: "no-store" });
         const data = r.ok ? await r.json() : [];
-        const products = (Array.isArray(data) ? data : []).map(normalizeProduct).filter(isEthnicOnly);
+        const products = (Array.isArray(data) ? data : [])
+          .map(normalizeProduct)
+          .filter(isEthnicOnly);
         setProductList(products);
       } catch (e: any) {
-        setError(e.message || "Failed to load products");
+        setError(e?.message || "Failed to load products");
       } finally {
         setLoading(false);
       }
@@ -195,8 +192,11 @@ export default function EthnicWearListingPage() {
 
   // Options + price bounds
   const { allSizes, allColors, allMaterials, globalMinPrice, globalMaxPrice } = useMemo(() => {
-    const s = new Set<string>(), c = new Set<string>(), m = new Set<string>();
-    let min = Infinity, max = 0;
+    const s = new Set<string>(),
+      c = new Set<string>(),
+      m = new Set<string>();
+    let min = Infinity,
+      max = 0;
     for (const p of productList) {
       p.availableSizes?.forEach((x) => x && s.add(String(x)));
       p.availableColors?.forEach((x) => x && c.add(String(x)));
@@ -214,12 +214,22 @@ export default function EthnicWearListingPage() {
     };
   }, [productList]);
 
+  // Initialize price sliders once products are in
   useEffect(() => {
     if (productList.length) {
       setPriceMin(globalMinPrice);
       setPriceMax(globalMaxPrice);
     }
-  }, [productList.length, globalMinPrice, globalMaxPrice]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [productList.length]);
+
+  const clearFilters = () => {
+    setSize("");
+    setColor("");
+    setMaterial("");
+    setPriceMin(globalMinPrice);
+    setPriceMax(globalMaxPrice);
+  };
 
   const filteredProducts = useMemo(
     () =>
@@ -235,7 +245,19 @@ export default function EthnicWearListingPage() {
     [productList, priceMin, priceMax, size, color, material]
   );
 
-  // Wishlist helpers (unchanged)
+  // Wishlist helpers
+  useEffect(() => {
+    try {
+      const data = localStorage.getItem("wishlist");
+      if (data) {
+        const parsed = JSON.parse(data) as Array<{ id: string }>;
+        setWishlist(new Set(parsed.map((i) => String(i.id))));
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
   const toggleWishlist = (product: Product) => {
     const next = new Set(wishlist);
     const item = {
@@ -257,7 +279,10 @@ export default function EthnicWearListingPage() {
 
     if (next.has(product._id)) {
       next.delete(product._id);
-      localStorage.setItem("wishlist", JSON.stringify(existing.filter((i: any) => i.id !== product._id)));
+      localStorage.setItem(
+        "wishlist",
+        JSON.stringify(existing.filter((i: any) => String(i.id) !== product._id))
+      );
     } else {
       next.add(product._id);
       localStorage.setItem("wishlist", JSON.stringify([...existing, item]));
@@ -302,7 +327,7 @@ export default function EthnicWearListingPage() {
 
   return (
     <div className="min-h-screen bg-white">
-      {/* Compact hero (reduced padding to remove big gap) */}
+      {/* Compact hero */}
       <div className="bg-gradient-to-b from-rose-50/70 via-white to-white border-b border-gray-100">
         <div className="container mx-auto px-4 py-8 md:py-10 text-center">
           <h1 className="text-3xl md:text-4xl font-light text-gray-900 mb-2">Ethnic Collection</h1>
@@ -311,29 +336,8 @@ export default function EthnicWearListingPage() {
           </p>
         </div>
       </div>
-{/* Back to Home Icon Bar */}
-<div className="sticky top-[var(--header-offset)] z-40 bg-white/80 backdrop-blur-sm border-b border-gray-100">
-  <div className="max-w-7xl mx-auto px-4 py-2 flex justify-start">
-    <Link
-      href="/"
-      className="inline-flex items-center gap-2 text-gray-700 hover:text-black text-sm font-medium transition"
-    >
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        fill="none"
-        viewBox="0 0 24 24"
-        strokeWidth={2}
-        stroke="currentColor"
-        className="w-4 h-4"
-      >
-        <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
-      </svg>
-      Back to Home
-    </Link>
-  </div>
-</div>
 
-      {/* Collapsible filter bar (tight spacing, no extra gap when closed) */}
+      {/* Collapsible filter bar */}
       <div className="sticky top-0 z-40 border-b border-gray-200 bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/70">
         <div className="container mx-auto px-4 py-1.5 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -442,6 +446,17 @@ export default function EthnicWearListingPage() {
               ? `?color=${encodeURIComponent(first.colour)}&size=${encodeURIComponent(first.size)}`
               : "";
 
+            // --- Pricing & badge logic ---
+            let salePrice = Math.round(p.minPrice);
+            let originalPrice = Math.round(p.maxPrice);
+            if (originalPrice <= salePrice) {
+              originalPrice = Math.round(salePrice / 0.7); // synthesize MRP ~30% off baseline
+            }
+            const rawPct = Math.max(0, Math.round((1 - salePrice / originalPrice) * 100));
+            const badgePct = rawPct >= 35 ? 40 : 30;
+
+            const wished = isInWishlist(p._id);
+
             return (
               <Link
                 key={p._id}
@@ -449,6 +464,30 @@ export default function EthnicWearListingPage() {
                 className="group bg-white rounded-lg overflow-hidden border border-gray-100 hover:shadow-md transition"
               >
                 <div className="relative aspect-[3/4] overflow-hidden">
+                  {/* Green sales ribbon — top-left */}
+                  <div className="absolute top-2 left-2 z-10">
+                    <span className="px-2 py-1 text-[11px] font-bold uppercase tracking-wider bg-green-600 text-white rounded-md shadow">
+                      {badgePct}% OFF
+                    </span>
+                  </div>
+
+                  {/* Wishlist heart — top-right */}
+                  <button
+                    aria-label={wished ? "Remove from wishlist" : "Add to wishlist"}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      toggleWishlist(p);
+                    }}
+                    className="absolute top-2 right-2 z-10 rounded-full bg-black/60 backdrop-blur p-2 hover:bg-black/80 transition"
+                  >
+                    <Heart
+                      className={wished ? "text-red-500 w-4 h-4" : "text-white w-4 h-4"}
+                      fill={wished ? "currentColor" : "none"}
+                      strokeWidth={wished ? 0 : 2}
+                    />
+                  </button>
+
                   <SafeImage
                     src={p.images?.[0]}
                     alt={p.product_name || `${p.material} ${p.category}`}
@@ -456,21 +495,25 @@ export default function EthnicWearListingPage() {
                     sizes="(min-width:1024px) 25vw, 50vw"
                     className="object-cover group-hover:scale-110 transition-transform duration-500"
                   />
+
                   {p.hasMultipleOptions && (
                     <div className="absolute bottom-2 right-2 bg-black/80 text-white px-2 py-1 rounded text-xs">
                       Options Available
                     </div>
                   )}
                 </div>
+
                 <div className="p-3">
                   <h3 className="font-medium text-gray-900 text-sm mb-1 leading-tight line-clamp-2">
                     {p.product_name || `${p.material} ${p.category}`}
                   </h3>
-                  <p className="text-xs text-gray-500 mb-2">Code: {p.product_code}</p>
-                  <p className="text-sm font-semibold text-gray-900">
-                    ₹{p.minPrice}
-                    {p.minPrice !== p.maxPrice && ` - ₹${p.maxPrice}`}
-                  </p>
+
+                  {/* Price row: original (struck) + discounted */}
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-xs text-gray-500 line-through">₹{originalPrice}</span>
+                    <span className="text-sm font-semibold text-gray-900">₹{salePrice}</span>
+                  </div>
+
                   <div className="w-full mt-2 py-2 text-xs font-medium rounded bg-black text-white text-center">
                     {p.hasMultipleOptions ? "VIEW OPTIONS" : "VIEW PRODUCT"}
                   </div>
@@ -494,7 +537,7 @@ export default function EthnicWearListingPage() {
         )}
       </div>
 
-      {/* Trust strip (kept concise) */}
+      {/* Trust strip */}
       <div className="border-t border-gray-200 bg-white">
         <div className="container mx-auto px-4 py-8">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-8 text-center">
@@ -523,4 +566,4 @@ export default function EthnicWearListingPage() {
       </div>
     </div>
   );
-} 
+}

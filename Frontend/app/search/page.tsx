@@ -1,93 +1,133 @@
-﻿"use client";
-import { Suspense, useEffect, useMemo, useState } from "react";
-import Image from "next/image";
-import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
-import { Search, Heart, ShoppingBag, Eye, ArrowRight } from "lucide-react";
-import { ALL_PRODUCTS, type Product } from "@/lib/product";
+﻿// app/search/page.tsx
+import ProductCardClient, { type CardProduct } from "@/components/commerce/ProductCardClient";
 
-function ProductCard({ p }: { p: Product }) {
+export const dynamic = "force-dynamic";
+
+type SearchPageProps = {
+  searchParams?: { q?: string };
+};
+
+const imgUrl = (p?: string | null) => {
+  if (!p || typeof p !== "string") return "/images/placeholder.jpg";
+  if (p.startsWith("http") || p.startsWith("/")) return p;
+  return `/images/${p}`;
+};
+
+export default async function SearchPage({ searchParams }: SearchPageProps) {
+  const q = (searchParams?.q || "").trim();
+  const base = process.env.NEXT_PUBLIC_API_URL || "";
+  const url = q
+    ? `${base}/api/products?search=${encodeURIComponent(q)}`
+    : `${base}/api/products`;
+
+  let products: any[] = [];
+  try {
+    const res = await fetch(url, { cache: "no-store" });
+    const data = await res.json();
+    products = Array.isArray(data.productList)
+      ? data.productList
+      : Array.isArray(data.products)
+      ? data.products
+      : Array.isArray(data)
+      ? data
+      : [];
+  } catch {
+    products = [];
+  }
+
+  // Normalize products
+  const rows: CardProduct[] = products.map((p: any) => ({
+    _id: p._id,
+    slug: p.slug,
+    name: p.product_name || p.name || "Untitled",
+    category: p.category?.toLowerCase() || "general",
+    images:
+      (Array.isArray(p.images) && p.images.length
+        ? p.images
+        : p.image
+        ? [p.image]
+        : []
+      ).map(imgUrl),
+    minPrice: p.minPrice ?? p.price ?? 0,
+    maxPrice: p.maxPrice ?? p.price ?? 0,
+  }));
+
+  // 🔹 Group products by category
+  const ethnic = rows.filter((p) =>
+    p.category.includes("ethnic") || p.name.toLowerCase().includes("ethnic")
+  );
+  const western = rows.filter((p) =>
+    p.category.includes("western") || p.name.toLowerCase().includes("western")
+  );
+  const sale = rows.filter((p) =>
+    p.category.includes("sale") ||
+    p.name.toLowerCase().includes("sale") ||
+    p.name.toLowerCase().includes("offer")
+  );
+
   return (
-    <div className="border rounded-lg p-4 flex flex-col items-center">
-      <Image src={p.image} alt={p.name} width={150} height={150} className="mb-2 object-contain" />
-      <h2 className="text-sm font-semibold mb-1">{p.name}</h2>
-      <p className="text-xs text-neutral-500 mb-2">{p.category}</p>
-      <div className="flex gap-2">
-        <Link href={`/product/${p.id}`} className="text-blue-600 hover:underline text-xs flex items-center gap-1">
-          <Eye className="w-4 h-4" /> View
-        </Link>
-        <button className="text-pink-600 hover:underline text-xs flex items-center gap-1">
-          <Heart className="w-4 h-4" /> Wishlist
-        </button>
-        <button className="text-green-600 hover:underline text-xs flex items-center gap-1">
-          <ShoppingBag className="w-4 h-4" /> Add to Cart
-        </button>
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
+      <div className="mb-6">
+        <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Search</h1>
+        {q ? (
+          <p className="text-sm text-gray-600 mt-1">
+            Results for <span className="font-medium">“{q}”</span>
+          </p>
+        ) : (
+          <p className="text-sm text-gray-600 mt-1">
+            Browse all collections
+          </p>
+        )}
       </div>
+
+      {/* ---------- Ethnic Collection ---------- */}
+      {ethnic.length > 0 && (
+        <section className="mb-10">
+          <h2 className="text-xl font-semibold text-gray-800 mb-3">
+            🪷 Ethnic Collection
+          </h2>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+            {ethnic.map((p) => (
+              <ProductCardClient key={p._id} p={p} />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* ---------- Western Collection ---------- */}
+      {western.length > 0 && (
+        <section className="mb-10">
+          <h2 className="text-xl font-semibold text-gray-800 mb-3">
+            👗 Western Collection
+          </h2>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+            {western.map((p) => (
+              <ProductCardClient key={p._id} p={p} />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* ---------- Sale Section ---------- */}
+      {sale.length > 0 && (
+        <section className="mb-10">
+          <h2 className="text-xl font-semibold text-gray-800 mb-3">
+            💸 Sale Collection
+          </h2>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+            {sale.map((p) => (
+              <ProductCardClient key={p._id} p={p} />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* ---------- No Products Found ---------- */}
+      {ethnic.length === 0 && western.length === 0 && sale.length === 0 && (
+        <div className="text-gray-600 text-center py-8">
+          No matching products found.
+        </div>
+      )}
     </div>
-  );
-}
-
-function SearchContent() {
-  const router = useRouter();
-  const params = useSearchParams();
-
-  const [query, setQuery] = useState("");
-  useEffect(() => {
-    const q = params.get("q") || "";
-    setQuery(q);
-  }, [params]);
-
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return ALL_PRODUCTS;
-    return ALL_PRODUCTS.filter((p) => {
-      const name = p.name.toLowerCase();
-      const cat = (p.category || "").toLowerCase();
-      return name.includes(q) || cat.includes(q);
-    });
-  }, [query]);
-
-  const onSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const q = query.trim();
-    router.push(q ? `/search?q=${encodeURIComponent(q)}` : "/search");
-  };
-
-  return (
-    <main className="mx-auto max-w-7xl px-4 py-6">
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <h1 className="text-lg md:text-xl font-semibold tracking-tight text-neutral-900">Search</h1>
-        <form onSubmit={onSubmit} className="w-full sm:w-[480px]">
-          <label className="relative block">
-            <span className="sr-only">Search all products</span>
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search all products…"
-              className="w-full rounded-lg border border-black/10 bg-white py-2.5 pl-9 pr-3 text-sm outline-none focus:border-black/40"
-            />
-            <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-neutral-500" />
-          </label>
-        </form>
-      </div>
-
-      <div className="mb-4 text-xs text-neutral-600">
-        {filtered.length} result{filtered.length !== 1 ? "s" : ""} {query ? `for “${query}”` : "(showing all)"}
-      </div>
-
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-5">
-        {filtered.map((p) => (
-          <ProductCard key={p.id} p={p} />
-        ))}
-      </div>
-    </main>
-  );
-}
-
-export default function SearchPage() {
-  return (
-    <Suspense fallback={<div className="p-6 text-center text-neutral-500">Loading search...</div>}>
-      <SearchContent />
-    </Suspense>
   );
 }

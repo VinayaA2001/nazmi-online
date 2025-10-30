@@ -3,9 +3,8 @@ import Image from "next/image";
 import { useEffect, useState, useCallback } from "react";
 import { Heart, ShoppingCart, User, Search, Menu, X } from "lucide-react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 
-// Define types for custom events
 declare global {
   interface WindowEventMap {
     "wishlist-updated": CustomEvent;
@@ -29,7 +28,9 @@ export default function Header() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [isClient, setIsClient] = useState(false);
+
   const pathname = usePathname();
+  const router = useRouter();
 
   useEffect(() => {
     setIsClient(true);
@@ -40,8 +41,12 @@ export default function Header() {
     try {
       const wishlist = JSON.parse(localStorage.getItem("wishlist") || "[]");
       const cart = JSON.parse(localStorage.getItem("cart") || "[]");
-      setWishlistCount(wishlist.length);
-      setCartCount(cart.reduce((sum: number, item: any) => sum + (item.quantity || 0), 0));
+      setWishlistCount(Array.isArray(wishlist) ? wishlist.length : 0);
+      setCartCount(
+        Array.isArray(cart)
+          ? cart.reduce((sum: number, item: any) => sum + (item.quantity || 0), 0)
+          : 0
+      );
     } catch (error) {
       console.error("Error loading counts:", error);
     }
@@ -49,7 +54,6 @@ export default function Header() {
 
   useEffect(() => {
     const handleScroll = () => setScrolled(window.scrollY > 50);
-
     loadCounts();
 
     const handleStorageUpdate = () => loadCounts();
@@ -104,16 +108,19 @@ export default function Header() {
     { href: "/cart", label: `Shopping Cart`, icon: "🛒" },
   ];
 
-  const quickSearchTerms = ["Kurtis", "Anarkali", "Dresses", "Office Wear", "Festive Collection", "Designer Sarees"];
+  const quickSearchTerms = [
+    "Kurtis",
+    "Anarkali",
+    "Dresses",
+    "Office Wear",
+    "Festive Collection",
+    "Designer Sarees",
+  ];
 
   return (
     <>
-      {/* Announcement Bar (hidden to remove whitespace; add content and remove 'hidden' to use) */}
+      {/* Announcement Bar (hidden) */}
       <div className="hidden bg-gradient-to-r from-gray-900 to-gray-800 text-white text-sm py-3 px-4 relative overflow-hidden">
-        {/* Example content (unhide bar to use) */}
-        {/* <div className="relative z-10 text-center">
-          Free Delivery within 3 km · Lucky Draw on orders ₹2000+ · New Festive Collection Live ✨
-        </div> */}
         <div className="absolute inset-0 opacity-5" aria-hidden>
           <div className="absolute top-2 left-10">✨</div>
           <div className="absolute top-1 right-20">⭐</div>
@@ -124,13 +131,19 @@ export default function Header() {
       {/* Main Header */}
       <header
         className={`fixed top-0 w-full z-50 transition-all duration-500 ${
-          scrolled ? "bg-white/95 backdrop-blur-xl shadow-2xl border-b border-gray-100" : "bg-white border-b border-gray-100"
+          scrolled
+            ? "bg-white/95 backdrop-blur-xl shadow-2xl border-b border-gray-100"
+            : "bg-white border-b border-gray-100"
         }`}
       >
         <div className="max-w-7xl mx-auto px-4 sm:px-6">
           <div className="flex items-center justify-between h-[var(--header-offset)]">
-            {/* Logo Section */}
-            <Link href="/" className="flex items-center group transition-all duration-500 flex-shrink-0" onClick={closeAllMenus}>
+            {/* Logo */}
+            <Link
+              href="/"
+              className="flex items-center group transition-all duration-500 flex-shrink-0"
+              onClick={closeAllMenus}
+            >
               <div className="relative">
                 <div className="absolute inset-0 bg-gradient-to-br from-amber-600 to-amber-800 rounded-full blur-md opacity-20 group-hover:opacity-30 transition-opacity duration-500" />
                 <Image
@@ -144,7 +157,9 @@ export default function Header() {
                 <div className="absolute -inset-1 bg-gradient-to-r from-amber-400 to-amber-600 rounded-full opacity-0 group-hover:opacity-20 blur transition-opacity duration-500" />
               </div>
               <div className="ml-4">
-                <span className="text-2xl font-serif font-bold text-gray-900 tracking-wider block leading-tight">NAZMI</span>
+                <span className="text-2xl font-serif font-bold text-gray-900 tracking-wider block leading-tight">
+                  NAZMI
+                </span>
                 <span className="text-xs text-amber-700 font-medium tracking-widest uppercase bg-amber-50 px-2 py-1 rounded-full">
                   Luxury Boutique
                 </span>
@@ -221,7 +236,6 @@ export default function Header() {
                   <div className="absolute inset-0 bg-amber-500/10 rounded-2xl scale-0 group-hover:scale-100 transition-transform duration-300" />
                 </button>
 
-                {/* Search Panel */}
                 {searchOpen && (
                   <div className="absolute top-full right-0 mt-2 w-96 bg-white rounded-2xl shadow-2xl border border-gray-100 p-6 animate-in slide-in-from-top-5 duration-300 z-50">
                     <form onSubmit={handleSearch} className="space-y-4">
@@ -244,11 +258,19 @@ export default function Header() {
                       </button>
                     </form>
 
-                    {/* Quick Search */}
                     <div className="mt-4 pt-4 border-t border-gray-100">
-                      <p className="text-xs text-gray-500 font-medium mb-3 uppercase tracking-wider">Trending Searches:</p>
+                      <p className="text-xs text-gray-500 font-medium mb-3 uppercase tracking-wider">
+                        Trending Searches:
+                      </p>
                       <div className="flex flex-wrap gap-2">
-                        {quickSearchTerms.map((term) => (
+                        {[
+                          "Kurtis",
+                          "Anarkali",
+                          "Dresses",
+                          "Office Wear",
+                          "Festive Collection",
+                          "Designer Sarees",
+                        ].map((term) => (
                           <button
                             key={term}
                             type="button"
@@ -264,16 +286,19 @@ export default function Header() {
                 )}
               </div>
 
-              {/* Account */}
-              <Link
-                href="/account"
+              {/* Account → navigate to /account */}
+              <button
+                type="button"
                 className="relative p-3 text-gray-600 hover:text-amber-600 transition-all duration-300 group rounded-2xl hover:bg-amber-50 hidden sm:block"
-                onClick={closeAllMenus}
+                onClick={() => {
+                  closeAllMenus();
+                  router.push("/account");
+                }}
                 aria-label="My account"
               >
                 <User className="w-5 h-5 transition-transform duration-300 group-hover:scale-110" />
                 <div className="absolute inset-0 bg-amber-500/10 rounded-2xl scale-0 group-hover:scale-100 transition-transform duration-300" />
-              </Link>
+              </button>
 
               {/* Wishlist */}
               <Link
@@ -336,7 +361,7 @@ export default function Header() {
             <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-2">
               {mobileNavItems.map(({ href, label, icon, highlight }) => (
                 <Link
-                  key={href}
+                  key={href + label}
                   href={href}
                   className={`flex items-center py-4 px-6 text-lg font-medium transition-all duration-300 rounded-2xl group ${
                     isActiveLink(href)
@@ -349,13 +374,19 @@ export default function Header() {
                   }`}
                   onClick={() => setMobileMenuOpen(false)}
                 >
-                  <span className="text-2xl mr-4 transition-transform duration-300 group-hover:scale-110">{icon}</span>
+                  <span className="text-2xl mr-4 transition-transform duration-300 group-hover:scale-110">
+                    {icon}
+                  </span>
                   <span className="flex-1">{label}</span>
                   {isClient && label === "Wishlist" && wishlistCount > 0 && (
-                    <span className="bg-red-500 text-white text-xs px-2 py-1 rounded-full font-semibold">{wishlistCount}</span>
+                    <span className="bg-red-500 text-white text-xs px-2 py-1 rounded-full font-semibold">
+                      {wishlistCount}
+                    </span>
                   )}
                   {isClient && label === "Shopping Cart" && cartCount > 0 && (
-                    <span className="bg-amber-500 text-white text-xs px-2 py-1 rounded-full font-semibold">{cartCount}</span>
+                    <span className="bg-amber-500 text-white text-xs px-2 py-1 rounded-full font-semibold">
+                      {cartCount}
+                    </span>
                   )}
                   {highlight && (
                     <span className="ml-2 px-2 py-1 bg-gradient-to-r from-red-500 to-red-600 text-white text-xs rounded-full font-semibold animate-pulse">
@@ -369,17 +400,11 @@ export default function Header() {
         )}
       </header>
 
-      {/* Spacer for fixed header (keeps content below header). 
-          If you move padding to <main> in layout, remove this spacer. */}
-      <div className="h-[var(--header-offset)]" />
+      {/* ✅ Premium Soft Glow Divider fixed under header */}
+      <div className="fixed left-0 right-0 top-[var(--header-offset)] z-40 h-[3px] bg-black/40 shadow-[0_0_10px_rgba(0,0,0,0.5)] pointer-events-none" />
 
-      {/* Overlays */}
-      {mobileMenuOpen && (
-        <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-40 lg:hidden animate-in fade-in duration-300" onClick={() => setMobileMenuOpen(false)} />
-      )}
-      {searchOpen && (
-        <div className="fixed inset-0 bg-black/10 backdrop-blur-sm z-40 animate-in fade-in duration-300" onClick={() => setSearchOpen(false)} />
-      )}
+      {/* Spacer for fixed header */}
+      <div className="h-[var(--header-offset)]" />
     </>
   );
 }

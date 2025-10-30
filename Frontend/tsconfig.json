@@ -1,44 +1,45 @@
 {
   "compilerOptions": {
+    /* === Path Aliases === */
     "baseUrl": ".",
     "paths": {
-      "@/*": [
-        "./*"
-      ]
+      "@/*": ["./*"]
     },
-    "jsx": "preserve",
+
+    /* === Module & Target === */
+    "target": "es2022",
     "module": "esnext",
     "moduleResolution": "bundler",
-    "target": "es2020",
+
+    /* === JSX & React === */
+    "jsx": "preserve",
+    "types": ["node", "react", "react-dom", "next"],
+
+    /* === Libraries === */
+    "lib": ["dom", "dom.iterable", "esnext"],
+
+    /* === Strictness & Safety === */
     "strict": true,
-    "esModuleInterop": true,
-    "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
-    "lib": [
-      "dom",
-      "dom.iterable",
-      "esnext"
-    ],
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+
+    /* === File Handling === */
+    "resolveJsonModule": true,
     "allowJs": true,
     "noEmit": true,
     "incremental": true,
-    "resolveJsonModule": true,
-    "isolatedModules": true,
-    "plugins": [
-      {
-        "name": "next"
-      }
-    ]
+
+    /* === Next.js Plugin === */
+    "plugins": [{ "name": "next" }]
   },
   "include": [
     "**/*.ts",
     "**/*.tsx",
-    "app/returns-exchange",
     "next-env.d.ts",
-    ".next/types/**/*.ts"
+    ".next/types/**/*.ts",
+    "global.d.ts"
   ],
-  "exclude": [
-    "node_modules",
-    ".next"
-  ]
+  "exclude": ["node_modules", ".next"]
 }

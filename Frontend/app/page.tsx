@@ -3,6 +3,10 @@ import Slomo from "@/components/blocks/slomo";
 import Image from "next/image";
 import Link from "next/link";
 
+/* ---------- Config ---------- */
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
+
+/* ---------- Types ---------- */
 type Category = {
   name: string;
   href: string;
@@ -11,16 +15,28 @@ type Category = {
   sale?: boolean;
 };
 
+type Product = {
+  _id: string;
+  slug?: string;
+  product_name?: string;
+  name?: string;
+  category?: string;
+  price?: number;
+  minPrice?: number;
+  maxPrice?: number;
+  images?: string[];
+  image?: string;
+};
+
 /* ---------- Mobile Bottom Dock ---------- */
 function MobileCategoryDock({ categories }: { categories: Category[] }) {
   const mains = categories.map((c) => ({
     ...c,
-    emoji:
-      c.name.toLowerCase().includes("ethnic")
-        ? "🪔"
-        : c.name.toLowerCase().includes("western")
-        ? "👗"
-        : "🔥",
+    emoji: c.name.toLowerCase().includes("ethnic")
+      ? "🪔"
+      : c.name.toLowerCase().includes("western")
+      ? "👗"
+      : "🔥",
   }));
 
   return (
@@ -64,7 +80,9 @@ function CategoryQuickNav({ categories }: { categories: Category[] }) {
             >
               <span className="text-base" aria-hidden>•</span>
               <span className="font-medium">{c.name}</span>
-              {c.sale ? <span className="text-[10px] font-semibold text-red-600">SALE</span> : null}
+              {c.sale ? (
+                <span className="text-[10px] font-semibold text-red-600">SALE</span>
+              ) : null}
             </Link>
           ))}
         </div>
@@ -73,7 +91,70 @@ function CategoryQuickNav({ categories }: { categories: Category[] }) {
   );
 }
 
-export default function HomePage() {
+/* ---------- Data ---------- */
+async function fetchNewArrivals(): Promise<Product[]> {
+  try {
+    const url = `${API_BASE}/api/products?sort=new&limit=40`; // fetch extra; we’ll filter + slice
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) return [];
+    const data = await res.json();
+    const items: Product[] = Array.isArray(data)
+      ? data
+      : data.items || data.products || [];
+    return items;
+  } catch {
+    return [];
+  }
+}
+
+/* ---------- Helpers ---------- */
+const isEthnicOrWestern = (c?: string) => {
+  const s = (c || "").toLowerCase();
+  return s.includes("west") || s.includes("ethnic") || s.includes("tradit"); // "Traditional"
+};
+
+const firstImage = (p: Product) =>
+  (p.images && p.images[0]) || p.image || "/images/placeholder.png";
+
+const displayName = (p: Product) => p.product_name || p.name || "Untitled";
+
+const displayPrice = (p: Product) => {
+  const min = p.minPrice ?? p.price;
+  const max = p.maxPrice ?? p.price;
+  if (min && max && min !== max)
+    return `₹${Number(min).toLocaleString("en-IN")} – ₹${Number(max).toLocaleString("en-IN")}`;
+  if (min) return `₹${Number(min).toLocaleString("en-IN")}`;
+  return "";
+};
+
+const productHref = (p: Product) => {
+  const base =
+    (p.category || "").toLowerCase().includes("west") ? "/western" : "/Ethnic-Wears";
+  const slugOrId = encodeURIComponent(p.slug || p._id);
+  return `${base}/${slugOrId}`;
+};
+
+/** Deterministic daily shuffle so grid order “changes every day” */
+function dailyShuffle<T>(arr: T[], limit: number): T[] {
+  const out = [...arr];
+  const today = new Date();
+  const key = `${today.getUTCFullYear()}-${today.getUTCMonth()}-${today.getUTCDate()}`;
+  let seed = 0;
+  for (let i = 0; i < key.length; i++) seed = (seed * 31 + key.charCodeAt(i)) >>> 0;
+  const rand = () => {
+    // xorshift32
+    seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5;
+    return ((seed >>> 0) % 10000) / 10000;
+  };
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out.slice(0, limit);
+}
+
+/* ---------- Page ---------- */
+export default async function HomePage() {
   const categories: Category[] = [
     {
       name: "Ethnic Wears",
@@ -103,24 +184,25 @@ export default function HomePage() {
     { quote: "The attention to detail in every piece is remarkable. Worth every penny!", author: "Lakshmi", role: "Loyal Customer", rating: 5 },
   ];
 
-  const features = [
-    { title: "Free Shipping", description: "Free delivery on all orders above ₹2000", icon: "🚚" },
-    { title: "Premium Quality", description: "Handpicked fabrics with expert craftsmanship", icon: "⭐" },
-    { title: "Easy 7-Day Returns", description: "7-day return for damaged products with video proof", icon: "📦" },
-  ];
+  // Fetch → filter to Ethnic/Traditional + Western → dedupe by _id → daily shuffle → limit 10
+  const raw = await fetchNewArrivals();
+  const filtered = raw.filter(p => isEthnicOrWestern(p.category));
+  const dedupMap = new Map(filtered.map(p => [p._id, p]));
+  const filteredUnique = Array.from(dedupMap.values());
+  const newArrivals = dailyShuffle(filteredUnique, 10);
 
   return (
     <div className="min-h-screen pb-16 sm:pb-0">
-      {/* HERO — visual only, no text/CTA; small negative margin removes hairline gap */}
+      {/* ✅ HERO — tiny gap (0.2 ≈ 2px) below header */}
       <section
-        className="relative -mt-px h-[65vh] sm:h-[72vh] md:h-[78vh] min-h-[460px] max-h-[760px] bg-black"
+        className="relative mt-[2px] h-[65vh] sm:h-[72vh] md:h-[78vh] min-h-[460px] max-h-[760px] bg-black"
         aria-label="Hero"
       >
         <Slomo />
         <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/20 to-transparent pointer-events-none" />
       </section>
 
-      {/* CATEGORY QUICK LINKS (all devices) */}
+      {/* CATEGORY QUICK LINKS */}
       <CategoryQuickNav categories={categories} />
 
       {/* CATEGORIES GRID */}
@@ -183,7 +265,71 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* TESTIMONIALS */}
+      {/* 🌟 NEW COLLECTION BANNER (updates daily) */}
+      <section className="bg-gradient-to-r from-amber-50 to-pink-50 border-y border-amber-100">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-5 flex flex-col sm:flex-row items-center justify-between gap-2">
+          <div className="text-center sm:text-left">
+            <p className="text-xs uppercase tracking-widest text-amber-700">Updated daily</p>
+            <h3 className="text-lg sm:text-xl font-semibold text-amber-900">New Collection</h3>
+          </div>
+          <div className="text-xs text-amber-800">
+            {new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}
+          </div>
+        </div>
+      </section>
+
+      {/* ⭐ NEW ARRIVALS (Ethnic + Western only, 10 items) — above Reviews */}
+      {newArrivals.length > 0 && (
+        <section className="py-10 sm:py-14 bg-white">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6">
+            <div className="text-center mb-8 sm:mb-12">
+              <span className="inline-block px-3.5 py-1.5 bg-amber-50 text-amber-800 text-xs sm:text-sm font-medium rounded-full uppercase tracking-wider">
+                New Arrivals
+              </span>
+              <h2 className="mt-4 text-[clamp(20px,3.6vw,36px)] font-bold text-gray-900">
+                Freshly Added Styles
+              </h2>
+              <p className="mt-2.5 text-gray-600 text-sm sm:text-base max-w-2xl mx-auto leading-relaxed">
+                Latest Ethnic & Western pieces—handpicked for today.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3.5 sm:gap-6">
+              {newArrivals.map((p, i) => (
+                <Link
+                  key={p._id}
+                  href={productHref(p)}
+                  className="group block overflow-hidden bg-white rounded-xl sm:rounded-2xl border border-gray-200 hover:shadow-md transition-all duration-300"
+                  aria-label={displayName(p)}
+                >
+                  <div className="relative aspect-[3/4]">
+                    <Image
+                      src={firstImage(p)}
+                      alt={displayName(p)}
+                      fill
+                      priority={i < 2}
+                      className="object-cover transition-transform duration-500 group-hover:scale-[1.05]"
+                      sizes="(max-width: 640px) 50vw, (max-width: 1200px) 20vw, 20vw"
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/50 via-black/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+                  </div>
+
+                  <div className="p-3.5 sm:p-4">
+                    <h3 className="text-sm sm:text-[15px] font-semibold text-gray-900 line-clamp-2">
+                      {displayName(p)}
+                    </h3>
+                    <p className="mt-1 text-amber-700 font-semibold text-sm">
+                      {displayPrice(p)}
+                    </p>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* TESTIMONIALS (Reviews) */}
       <section className="py-10 sm:py-16 bg-white">
         <div className="max-w-7xl mx-auto px-4 sm:px-6">
           <div className="text-center mb-8 sm:mb-12">
@@ -205,7 +351,7 @@ export default function HomePage() {
                 className="bg-white p-5 sm:p-6 rounded-xl sm:rounded-2xl shadow-sm border border-gray-100 hover:shadow-md transition-all duration-300 flex flex-col"
               >
                 <div className="flex justify-center mb-2">
-                  {[...Array(t.rating)].map((_, i2) => (
+                  {Array.from({ length: t.rating }).map((_, i2) => (
                     <span key={i2} className="text-yellow-400 text-base sm:text-lg">⭐</span>
                   ))}
                 </div>
@@ -221,35 +367,6 @@ export default function HomePage() {
           </div>
         </div>
       </section>
-
-      {/* FEATURES */}
-      <section className="py-10 sm:py-16 bg-black text-white">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 sm:gap-6">
-            {features.map((f, i) => (
-              <div
-                key={i}
-                className="text-center p-6 rounded-xl border border-gray-800 hover:bg-gray-900 transition-all duration-300"
-              >
-                <div className="text-3xl sm:text-4xl mb-3">{f.icon}</div>
-                <h3 className="font-semibold text-white text-base sm:text-lg mb-1.5">
-                  {f.title}
-                </h3>
-                <p className="text-gray-300 text-sm leading-relaxed">{f.description}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-      {/* PRODUCT COLOR DISCLAIMER */}
-<section className="bg-white py-6 border-t border-gray-200">
-  <div className="max-w-5xl mx-auto px-4 text-center">
-    <p className="text-[13px] sm:text-sm text-gray-500 leading-relaxed">
-      <span className="font-semibold text-gray-700">Please Note:</span> The photo may slightly differ from the actual item in terms of color due to lighting during photo shooting or monitor display variations.
-    </p>
-  </div>
-</section>
-
 
       {/* MOBILE BOTTOM DOCK */}
       <MobileCategoryDock categories={categories} />

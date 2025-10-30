@@ -7,6 +7,10 @@
   --color-primary: #8B4513;
   --color-secondary: #D4AF37;
   --color-accent: #F5F5DC;
+
+  /* ✅ Fixed header sizing */
+  --header-base: 72px;
+  --header-offset: calc(var(--header-base) + env(safe-area-inset-top, 0px));
 }
 
 * { 
@@ -188,6 +192,7 @@ a:focus-visible {
 ::-webkit-scrollbar-thumb:hover {
   background: #a67c52;
 }
+
 /* Reset for hero sections only */
 [class*="hero"] h1,
 [class*="hero"] h2, 
@@ -213,8 +218,11 @@ a:focus-visible {
   padding: 0 !important;
   line-height: 1.2 !important;
 }
-/* Remove unwanted top spacing between header and hero */
-main > section:first-child {
-  margin-top: 0 !important;
-  padding-top: 0 !important;
+
+/* ✅ Optional: make header a bit taller on larger screens */
+@media (min-width: 640px){
+  :root { --header-base: 80px; }
+}
+@media (min-width: 1024px){
+  :root { --header-base: 96px; }
 }

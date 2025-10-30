@@ -30,12 +30,13 @@
     "stripe": "^19.1.0"
   },
   "devDependencies": {
-    "@types/node": "24.6.2",
+    "@types/node": "^24.9.2",
     "@types/nodemailer": "^7.0.2",
-    "@types/react": "19.2.0",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
     "autoprefixer": "^10.4.21",
     "postcss": "^8.5.6",
     "tailwindcss": "^3.4.10",
-    "typescript": "5.9.3"
+    "typescript": "^5.9.3"
   }
 }

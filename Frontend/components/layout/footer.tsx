@@ -11,6 +11,7 @@ import {
   CreditCard,
   Facebook,
   ExternalLink,
+  Star,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -34,7 +35,7 @@ export default function Footer() {
             </div>
             <div>
               <h4 className="font-semibold text-lg">Free Shipping</h4>
-              <p className="text-gray-400 text-sm">On orders over ₹1999</p>
+              <p className="text-gray-400 text-sm">On orders over ₹2000</p>
             </div>
           </div>
 
@@ -53,10 +54,20 @@ export default function Footer() {
               <CreditCard className="w-6 h-6" />
             </div>
             <div>
-              <h4 className="font-semibold text-lg">Easy Returns</h4>
-              <p className="text-gray-400 text-sm">10 Day Policy</p>
+              <h4 className="font-semibold text-lg">Easy 7-Day Returns</h4>
+              <p className="text-gray-400 text-sm">For damaged products with video proof</p>
             </div>
           </div>
+          
+          <div className="flex items-center gap-4">
+    <div className="bg-[#6D7E5F] p-3 rounded-full">
+      <Star className="w-6 h-6" />
+    </div>
+    <div>
+      <h4 className="font-semibold text-lg">Premium Quality</h4>
+      <p className="text-gray-400 text-sm">Handpicked fabrics with expert craftsmanship</p>
+    </div>
+  </div>
 
           <div className="flex items-center gap-4">
             <div className="bg-[#6D7E5F] p-3 rounded-full">
@@ -150,7 +161,7 @@ export default function Footer() {
               <FooterLink href="/Ethnic-Wears" label="Ethnic-Wears" />
               <FooterLink href="/western" label="Western Wear" />
               <FooterLink href="/sale/under-999" label="Sale Collection" />
-              <FooterLink href="/new-arrivals" label="New Arrivals" />
+              
               
             </ul>
           </div>
