@@ -1,6 +1,6 @@
 "use client";
 import Image from "next/image";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { Heart, ShoppingCart, User, Search, Menu, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -32,9 +32,10 @@ export default function Header() {
   const pathname = usePathname();
   const router = useRouter();
 
-  useEffect(() => {
-    setIsClient(true);
-  }, []);
+  // ⬇️ hold the trigger+popover container to detect outside clicks
+  const searchWrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => setIsClient(true), []);
 
   const loadCounts = useCallback(() => {
     if (!isClient) return;
@@ -64,7 +65,6 @@ export default function Header() {
     window.addEventListener("scroll", handleScroll, { passive: true });
 
     const pollInterval = setInterval(loadCounts, 2000);
-
     return () => {
       window.removeEventListener("storage", handleStorageUpdate);
       window.removeEventListener("wishlist-updated", handleStorageUpdate as EventListener);
@@ -74,17 +74,50 @@ export default function Header() {
     };
   }, [loadCounts, pathname, isClient]);
 
-  const handleSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (searchQuery.trim()) {
-      window.location.href = `/search?q=${encodeURIComponent(searchQuery)}`;
-    }
+  /** Close search on outside click or Escape */
+  useEffect(() => {
+    if (!searchOpen) return;
+
+    const onDown = (e: MouseEvent | TouchEvent) => {
+      const el = searchWrapRef.current;
+      if (!el) return;
+      const target = e.target as Node | null;
+      if (target && !el.contains(target)) setSearchOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSearchOpen(false);
+    };
+
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("touchstart", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("touchstart", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [searchOpen]);
+
+  /** Also close popover on route changes */
+  useEffect(() => {
+    setSearchOpen(false);
+  }, [pathname]);
+
+  /** Navigate to search page and close popover */
+  const goSearch = (term: string) => {
+    const q = term.trim();
+    if (!q) return;
+    router.push(`/search?q=${encodeURIComponent(q)}`);
+    setSearchOpen(false);
   };
 
-  const isActiveLink = (href: string) => {
-    if (href === "/") return pathname === "/";
-    return pathname.startsWith(href);
+  /** Form submit uses SPA navigation */
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    goSearch(searchQuery);
   };
+
+  const isActiveLink = (href: string) => (href === "/" ? pathname === "/" : pathname.startsWith(href));
 
   const closeAllMenus = () => {
     setMobileMenuOpen(false);
@@ -109,12 +142,13 @@ export default function Header() {
   ];
 
   const quickSearchTerms = [
-    "Kurtis",
-    "Anarkali",
-    "Dresses",
-    "Office Wear",
-    "Festive Collection",
-    "Designer Sarees",
+    "Sharara",
+    "Jeans",
+    "Churidhars",
+    "Co-ords sets",
+    "Tops",
+    "Salwar sets",
+    "Kafftan tops",
   ];
 
   return (
@@ -131,9 +165,7 @@ export default function Header() {
       {/* Main Header */}
       <header
         className={`fixed top-0 w-full z-50 transition-all duration-500 ${
-          scrolled
-            ? "bg-white/95 backdrop-blur-xl shadow-2xl border-b border-gray-100"
-            : "bg-white border-b border-gray-100"
+          scrolled ? "bg-white/95 backdrop-blur-xl shadow-2xl border-b border-gray-100" : "bg-white border-b border-gray-100"
         }`}
       >
         <div className="max-w-7xl mx-auto px-4 sm:px-6">
@@ -225,10 +257,10 @@ export default function Header() {
 
             {/* Action Icons */}
             <div className="flex items-center space-x-2 sm:space-x-4">
-              {/* Search */}
-              <div className="relative">
+              {/* Search (with outside click close) */}
+              <div className="relative" ref={searchWrapRef}>
                 <button
-                  onClick={() => setSearchOpen(!searchOpen)}
+                  onClick={() => setSearchOpen((v) => !v)}
                   className="relative p-3 text-gray-600 hover:text-amber-600 transition-all duration-300 group rounded-2xl hover:bg-amber-50"
                   aria-label="Search products"
                 >
@@ -264,17 +296,18 @@ export default function Header() {
                       </p>
                       <div className="flex flex-wrap gap-2">
                         {[
-                          "Kurtis",
-                          "Anarkali",
-                          "Dresses",
-                          "Office Wear",
-                          "Festive Collection",
-                          "Designer Sarees",
+                          "Sharara",
+                          "Jeans",
+                          "Churidhars",
+                          "Co-ords sets",
+                          "Tops",
+                          "Salwar sets",
+                          "Kafftan tops",
                         ].map((term) => (
                           <button
                             key={term}
                             type="button"
-                            onClick={() => setSearchQuery(term)}
+                            onClick={() => goSearch(term)}
                             className="text-sm bg-gradient-to-r from-gray-50 to-gray-100 text-gray-700 px-3 py-2 rounded-lg hover:from-amber-50 hover:to-amber-100 hover:text-amber-700 transition-all duration-300 border border-gray-200 hover:border-amber-200"
                           >
                             {term}
@@ -286,7 +319,7 @@ export default function Header() {
                 )}
               </div>
 
-              {/* Account → navigate to /account */}
+              {/* Account */}
               <button
                 type="button"
                 className="relative p-3 text-gray-600 hover:text-amber-600 transition-all duration-300 group rounded-2xl hover:bg-amber-50 hidden sm:block"
@@ -339,7 +372,7 @@ export default function Header() {
               {/* Mobile Menu Button */}
               <button
                 onClick={() => {
-                  setMobileMenuOpen(!mobileMenuOpen);
+                  setMobileMenuOpen((v) => !v);
                   setSearchOpen(false);
                 }}
                 className="lg:hidden p-3 text-gray-600 hover:text-amber-600 transition-all duration-300 rounded-2xl hover:bg-amber-50"
@@ -400,7 +433,7 @@ export default function Header() {
         )}
       </header>
 
-      {/* ✅ Premium Soft Glow Divider fixed under header */}
+      {/* Soft Glow Divider under header */}
       <div className="fixed left-0 right-0 top-[var(--header-offset)] z-40 h-[3px] bg-black/40 shadow-[0_0_10px_rgba(0,0,0,0.5)] pointer-events-none" />
 
       {/* Spacer for fixed header */}

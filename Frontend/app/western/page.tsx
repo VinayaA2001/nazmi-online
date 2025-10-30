@@ -131,7 +131,6 @@ function normalizeProduct(raw: any): Product {
 /* ---------- Western-only filter ---------- */
 const WESTERN = ["western", "jeans", "tops", "dress", "skirt", "officewear", "denim", "jacket", "shirt", "trouser", "blouse"];
 const ETHNIC = ["ethnic", "traditional", "saree", "salwar", "kurta", "lehenga", "dhoti", "mundu"];
-
 const isWesternOnly = (p: Product) => {
   const txt = `${p.category} ${p.material} ${p.product_name}`.toLowerCase();
   return WESTERN.some((k) => txt.includes(k)) && !ETHNIC.some((k) => txt.includes(k));
@@ -151,10 +150,7 @@ const makeSlug = (p: Product) => {
   return slugify(withCode);
 };
 
-/* =======================================================================================
-   PAGE COMPONENT (default export must be a React component)
-   ======================================================================================= */
-export default function Page() {
+export default function WesternPage() {
   const [productList, setProductList] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [wishlist, setWishlist] = useState<Set<string>>(new Set());
@@ -214,7 +210,7 @@ export default function Page() {
     };
   }, [productList]);
 
-  // Initialize price sliders once products are in
+  // Initialize price sliders once
   useEffect(() => {
     if (productList.length) {
       setPriceMin(globalMinPrice);
@@ -245,7 +241,7 @@ export default function Page() {
     [productList, priceMin, priceMax, size, color, material]
   );
 
-  // Wishlist helpers
+  // Wishlist
   useEffect(() => {
     try {
       const data = localStorage.getItem("wishlist");
@@ -253,9 +249,7 @@ export default function Page() {
         const parsed = JSON.parse(data) as Array<{ id: string }>;
         setWishlist(new Set(parsed.map((i) => String(i.id))));
       }
-    } catch {
-      // ignore
-    }
+    } catch {}
   }, []);
 
   const toggleWishlist = (product: Product) => {
@@ -288,8 +282,9 @@ export default function Page() {
       localStorage.setItem("wishlist", JSON.stringify([...existing, item]));
     }
     setWishlist(next);
-    window.dispatchEvent(new Event("wishlist-updated"));
+    if (typeof window !== "undefined") window.dispatchEvent(new Event("wishlist-updated"));
   };
+
   const isInWishlist = (id: string) => wishlist.has(id);
 
   /* ---------------- UI ---------------- */
@@ -446,11 +441,11 @@ export default function Page() {
               ? `?color=${encodeURIComponent(first.colour)}&size=${encodeURIComponent(first.size)}`
               : "";
 
-            // --- Pricing & badge logic ---
+            // Pricing & badge
             let salePrice = Math.round(p.minPrice);
             let originalPrice = Math.round(p.maxPrice);
             if (originalPrice <= salePrice) {
-              originalPrice = Math.round(salePrice / 0.7); // synthesize MRP ~30% off baseline
+              originalPrice = Math.round(salePrice / 0.7); // synthesize MRP ~30% off
             }
             const rawPct = Math.max(0, Math.round((1 - salePrice / originalPrice) * 100));
             const badgePct = rawPct >= 35 ? 40 : 30;
@@ -464,14 +459,14 @@ export default function Page() {
                 className="group bg-white rounded-lg overflow-hidden border border-gray-100 hover:shadow-md transition"
               >
                 <div className="relative aspect-[3/4] overflow-hidden">
-                  {/* Green sales ribbon — top-left */}
+                  {/* Ribbon */}
                   <div className="absolute top-2 left-2 z-10">
                     <span className="px-2 py-1 text-[11px] font-bold uppercase tracking-wider bg-green-600 text-white rounded-md shadow">
                       {badgePct}% OFF
                     </span>
                   </div>
 
-                  {/* Wishlist heart — top-right */}
+                  {/* Wishlist */}
                   <button
                     aria-label={wished ? "Remove from wishlist" : "Add to wishlist"}
                     onClick={(e) => {
@@ -508,7 +503,6 @@ export default function Page() {
                     {p.product_name || `${p.material} ${p.category}`}
                   </h3>
 
-                  {/* Price row: original (struck) + discounted */}
                   <div className="flex items-baseline gap-2">
                     <span className="text-xs text-gray-500 line-through">₹{originalPrice}</span>
                     <span className="text-sm font-semibold text-gray-900">₹{salePrice}</span>
