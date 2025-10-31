@@ -13,7 +13,7 @@
 
     /* === JSX & React === */
     "jsx": "preserve",
-    "types": ["node", "react", "react-dom", "next"],
+    "types": ["node", "react", "react-dom", "next", "next/types/global"],
 
     /* === Libraries === */
     "lib": ["dom", "dom.iterable", "esnext"],
@@ -35,6 +35,8 @@
     "plugins": [{ "name": "next" }]
   },
   "include": [
+    "app/**/*",
+    "components/**/*",
     "**/*.ts",
     "**/*.tsx",
     "next-env.d.ts",
