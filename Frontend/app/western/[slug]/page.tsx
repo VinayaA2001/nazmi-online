@@ -3,6 +3,7 @@
 import type React from "react";
 import { useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
+import Link from "next/link";
 import Image from "next/image";
 import {
   Heart,
@@ -111,6 +112,35 @@ async function loadRazorpay(): Promise<boolean> {
   });
 }
 
+/* ========= Small Card for Related Section ========= */
+function ProductTile({ p }: { p: Product }) {
+  const cover = (p.images?.[0] ?? "/images/placeholder.jpg") as string;
+  const href = `/western/${makeSlug(p)}`;
+  return (
+    <Link
+      href={href}
+      className="group block rounded-xl overflow-hidden border border-gray-200 hover:border-gray-300 transition-shadow hover:shadow-sm"
+    >
+      <div className="relative w-full aspect-[3/4] bg-gray-100">
+        <Image
+          src={imgUrl(cover)}
+          alt={displayName(p)}
+          fill
+          sizes="(max-width: 768px) 50vw, 300px"
+          className="object-cover transition-transform duration-300 group-hover:scale-[1.03]"
+        />
+      </div>
+      <div className="p-3">
+        <p className="text-sm text-gray-900 line-clamp-1">{displayName(p)}</p>
+        <p className="text-xs text-gray-500 mt-0.5 line-clamp-1">{p.category}</p>
+        <p className="text-sm font-semibold mt-1">
+          {p.minPrice === p.maxPrice ? inr(p.minPrice) : `${inr(p.minPrice)} – ${inr(p.maxPrice)}`}
+        </p>
+      </div>
+    </Link>
+  );
+}
+
 /* ========= Page ========= */
 export default function ProductDetailPage() {
   const params = useParams();
@@ -127,6 +157,9 @@ export default function ProductDetailPage() {
   /* Data */
   const [loading, setLoading] = useState(true);
   const [product, setProduct] = useState<Product | null>(null);
+
+  /* Related (Western) */
+  const [related, setRelated] = useState<Product[]>([]);
 
   /* Variant/UI state */
   const [color, setColor] = useState<string>(search.get("color") || "");
@@ -208,6 +241,38 @@ export default function ProductDetailPage() {
       }
     })();
   }, [slugParamRaw]);
+
+  /* ========= Fetch Related Western Products ========= */
+  useEffect(() => {
+    (async () => {
+      try {
+        // Load all products (or if you have a category API, replace with that)
+        const res = await fetch("/api/products", { cache: "no-store" });
+        if (!res.ok) return;
+
+        const list: Product[] = await res.json();
+
+        // Normalize images
+        list.forEach((p: any) => {
+          p.images = (Array.isArray(p.images) && p.images.length ? p.images : ["/images/placeholder.jpg"]).map(imgUrl);
+        });
+
+        // Filter: only "western" category (case-insensitive), exclude current product
+        const westerns = list.filter((p) => norm(p.category).includes("western"));
+        const filtered = product ? westerns.filter((p) => p._id !== product._id) : westerns;
+
+        // Shuffle randomly and pick first N
+        const N = 8;
+        for (let i = filtered.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [filtered[i], filtered[j]] = [filtered[j], filtered[i]];
+        }
+        setRelated(filtered.slice(0, N));
+      } catch (err) {
+        console.error("[Related] load error:", err);
+      }
+    })();
+  }, [product?._id]); // refetch when product changes
 
   /* ========= Full options ========= */
   const fullColors = useMemo(() => {
@@ -516,7 +581,7 @@ export default function ProductDetailPage() {
       )}
 
       {/* Product details */}
-      <div className="container mx-auto px-4 pb-10">
+      <div className="container mx-auto px-4 pb-6">
         <div className="grid md:grid-cols-2 gap-8">
           {/* LEFT: Gallery */}
           <div>
@@ -742,7 +807,21 @@ export default function ProductDetailPage() {
         </div>
       </div>
 
-      {/* New Arrivals (optional: you can reuse your ProductCardClient grid if desired) */}
+      {/* ===== Western Wears — Random Picks ===== */}
+      {related.length > 0 && (
+        <div className="container mx-auto px-4 pb-12">
+          <div className="flex items-end justify-between mb-4">
+            <h2 className="text-xl md:text-2xl font-semibold text-gray-900">Explore More Western Wear</h2>
+            <span className="text-xs text-gray-500">{related.length} picks</span>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+            {related.map((p) => (
+              <ProductTile key={p._id} p={p} />
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Payment Modal */}
       {showPaymentModal && product && variant && (

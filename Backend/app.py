@@ -1,92 +1,115 @@
-# C:\Users\Admin\OneDrive\Desktop\NAZMI-123\Backend\app.py
-import os, json, jwt
+# C:\NAZMI_BOUTIQUE\backend\app.py
+import os
+import json
+import logging
+from datetime import datetime, timedelta
+from functools import wraps
+from decimal import Decimal, ROUND_HALF_UP
+
 from flask import Flask, request, jsonify, current_app
 from flask_cors import CORS
 from flask_pymongo import PyMongo
-from datetime import datetime, timedelta
-from werkzeug.security import generate_password_hash, check_password_hash
-import razorpay
 from flask_mail import Mail, Message
+from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
 from bson import ObjectId
-import logging
-from functools import wraps
+import razorpay
+import jwt
 
-# Load .env
+# ------------------- LOAD .env -------------------
 load_dotenv()
 
+# ------------------- APP -------------------
 app = Flask(__name__)
 
 # CORS (allow Next.js dev host)
-CORS(app, supports_credentials=True, resources={r"/api/*": {"origins": ["http://localhost:3000"]}})
+CLIENT_ORIGIN = os.getenv("CLIENT_ORIGIN", "http://localhost:3000")
+CORS(app, supports_credentials=True,
+     resources={r"/api/*": {"origins": [CLIENT_ORIGIN]}})
 
 # ------------------- CONFIG -------------------
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY') or "nazmi-boutique-secret-key"
-app.config["MONGO_URI"] = os.getenv("MONGO_URI")
-app.config['MAIL_USERNAME'] = os.getenv('MAIL_USERNAME')
-app.config['MAIL_PASSWORD'] = os.getenv('MAIL_PASSWORD')
-app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.gmail.com')
-app.config['MAIL_PORT'] = int(os.getenv('MAIL_PORT', 587))
-app.config['MAIL_USE_TLS'] = os.getenv('MAIL_USE_TLS', 'True') in ['True', 'true', '1']
-app.config['MAIL_USE_SSL'] = os.getenv('MAIL_USE_SSL', 'False') in ['True', 'true', '1']
-app.config['MAIL_DEFAULT_SENDER'] = app.config['MAIL_USERNAME']
+def _env_bool(name: str, default: bool = False) -> bool:
+    return str(os.getenv(name, str(default))).strip().lower() in ("1", "true", "yes", "on")
 
+app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "nazmi-boutique-secret-key-2025")
+JWT_SECRET = os.getenv("JWT_SECRET", app.config["SECRET_KEY"])  # prefer JWT_SECRET if provided
+
+# DB
+app.config["MONGO_URI"] = os.getenv("MONGO_URI")
+
+# Mail
+app.config["MAIL_SERVER"] = os.getenv("MAIL_SERVER", "smtp.gmail.com")
+app.config["MAIL_PORT"] = int(os.getenv("MAIL_PORT", 587))
+app.config["MAIL_USE_TLS"] = _env_bool("MAIL_USE_TLS", True)
+app.config["MAIL_USE_SSL"] = _env_bool("MAIL_USE_SSL", False)
+app.config["MAIL_USERNAME"] = os.getenv("MAIL_USERNAME")
+app.config["MAIL_PASSWORD"] = os.getenv("MAIL_PASSWORD")
+app.config["MAIL_DEFAULT_SENDER"] = os.getenv("MAIL_DEFAULT_SENDER", app.config["MAIL_USERNAME"])
 
 # Behaviour
-JWT_EXPIRES_DAYS = int(os.getenv('JWT_EXPIRES_DAYS', 7))
-ALLOW_GUEST_CHECKOUT = os.getenv('ALLOW_GUEST_CHECKOUT', 'true').lower() == 'true'
-ADMIN_EMAIL = "nazmiboutique1@gmail.com"
+JWT_EXPIRES_DAYS = int(os.getenv("JWT_EXPIRES_DAYS", 7))
+ALLOW_GUEST_CHECKOUT = _env_bool("ALLOW_GUEST_CHECKOUT", True)
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "nazmiboutique1@gmail.com")
 
-# ------------------- INITIALIZE EXTENSIONS -------------------
+# ------------------- EXTENSIONS -------------------
 mongo = PyMongo(app)
 db = mongo.db
 mail = Mail(app)
 
+# Razorpay
 razorpay_client = None
-if os.getenv('RAZORPAY_KEY_ID') and os.getenv('RAZORPAY_KEY_SECRET'):
-    razorpay_client = razorpay.Client(
-        auth=(os.getenv('RAZORPAY_KEY_ID'), os.getenv('RAZORPAY_KEY_SECRET'))
-    )
+RZP_KEY = os.getenv("RAZORPAY_KEY_ID")
+RZP_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
+if RZP_KEY and RZP_SECRET:
+    try:
+        razorpay_client = razorpay.Client(auth=(RZP_KEY, RZP_SECRET))
+    except Exception as e:
+        app.logger.error(f"Razorpay init failed: {e}")
+        razorpay_client = None
 
 # ------------------- HELPERS -------------------
-def make_jwt(payload, expires_days=JWT_EXPIRES_DAYS):
-    p = payload.copy()
-    p['exp'] = datetime.utcnow() + timedelta(days=expires_days)
-    token = jwt.encode(p, app.config['SECRET_KEY'], algorithm="HS256")
-    if isinstance(token, bytes):
-        token = token.decode('utf-8')
-    return token
+def _money(val) -> Decimal:
+    """Convert to Decimal(2dp) safely."""
+    if isinstance(val, Decimal):
+        d = val
+    else:
+        d = Decimal(str(val or 0))
+    return d.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
-def decode_jwt(token):
-    return jwt.decode(token, app.config['SECRET_KEY'], algorithms=["HS256"])
+def make_jwt(payload: dict, expires_days: int = JWT_EXPIRES_DAYS) -> str:
+    p = payload.copy()
+    p["exp"] = datetime.utcnow() + timedelta(days=expires_days)
+    token = jwt.encode(p, JWT_SECRET, algorithm="HS256")
+    return token.decode("utf-8") if isinstance(token, bytes) else token
+
+def decode_jwt(token: str) -> dict:
+    return jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
 
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        token = request.headers.get('Authorization')
+        token = request.headers.get("Authorization")
         if not token:
-            return jsonify({'error': 'Token is missing!'}), 401
+            return jsonify({"error": "Token is missing!"}), 401
         try:
-            token = token.replace('Bearer ', '')
+            token = token.replace("Bearer ", "")
             data = decode_jwt(token)
-            current_user = db.users.find_one({"_id": ObjectId(data['user_id'])})
+            current_user = db.users.find_one({"_id": ObjectId(data["user_id"])})
             if not current_user:
-                return jsonify({'error': 'User not found'}), 401
+                return jsonify({"error": "User not found"}), 401
         except Exception as e:
-            return jsonify({'error': 'Token is invalid!', 'details': str(e)}), 401
+            return jsonify({"error": "Token is invalid!", "details": str(e)}), 401
         return f(current_user, *args, **kwargs)
     return decorated
 
 def get_current_user_optional():
-    """Return user if Authorization present & valid, else None."""
-    token = request.headers.get('Authorization')
+    token = request.headers.get("Authorization")
     if not token:
         return None
     try:
-        token = token.replace('Bearer ', '')
+        token = token.replace("Bearer ", "")
         data = decode_jwt(token)
-        user = db.users.find_one({"_id": ObjectId(data['user_id'])})
-        return user or None
+        return db.users.find_one({"_id": ObjectId(data["user_id"])})
     except Exception:
         return None
 
@@ -99,10 +122,10 @@ def send_simple_email(subject, recipients, body_text, body_html=None):
         mail.send(msg)
         return True, None
     except Exception as e:
+        current_app.logger.error(f"Email send error: {e}")
         return False, str(e)
 
 def send_admin_plain(subject: str, text: str):
-    """Send a simple plain text email copy to admin."""
     try:
         msg = Message(subject=subject, recipients=[ADMIN_EMAIL])
         msg.body = text
@@ -112,248 +135,359 @@ def send_admin_plain(subject: str, text: str):
         current_app.logger.error(f"Admin email send error: {e}")
         return False
 
-# ------------------- ROUTES -------------------
+def oid(x):
+    try:
+        return ObjectId(x)
+    except Exception:
+        return None
 
-@app.route('/')
+# ---------- Referral helpers ----------
+def _sanitize_percent(v):
+    """Clamp discount percent between 5 and 10."""
+    try:
+        v = float(v)
+    except Exception:
+        v = 5.0
+    return max(5.0, min(10.0, v))
+
+def _load_referral(code: str):
+    if not code:
+        return None
+    return db.referral_codes.find_one({"code": code.upper().strip()})
+
+def _referral_is_valid(ref):
+    if not ref:
+        return False, "not_found"
+    # expired?
+    expires_at = ref.get("expires_at")
+    if expires_at:
+        try:
+            if datetime.utcnow() > datetime.fromisoformat(expires_at.replace("Z", "+00:00")):
+                return False, "expired"
+        except Exception:
+            pass
+    # usage exhausted?
+    if ref.get("max_uses", 0) > 0 and ref.get("uses", 0) >= ref["max_uses"]:
+        return False, "exhausted"
+    return True, None
+
+def _apply_referral(subtotal: Decimal, code: str):
+    """Return (discount_percent, discount_amount, grand_total, reason_if_invalid)"""
+    ref = _load_referral(code)
+    ok, reason = _referral_is_valid(ref)
+    if not ok:
+        return Decimal("0"), Decimal("0.00"), _money(subtotal), reason
+    percent = Decimal(str(_sanitize_percent(ref.get("percent", 5))))
+    discount_amount = (subtotal * (percent / Decimal("100"))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    grand_total = _money(subtotal - discount_amount)
+    return percent, discount_amount, grand_total, None
+
+# ------------------- ROUTES -------------------
+@app.get("/")
 def home():
     return jsonify({"message": "Welcome to NAZMI Boutique API", "status": "running"})
 
-@app.route('/api/health', methods=['GET'])
+@app.get("/api/health")
 def health():
-    return jsonify({'status': 'healthy', 'timestamp': datetime.utcnow().isoformat()})
+    return jsonify({"status": "healthy", "timestamp": datetime.utcnow().isoformat()})
 
 # ---------- PRODUCTS ----------
-@app.route('/api/products', methods=['GET'])
+@app.get("/api/products")
 def get_products():
-    """Fetch all products with support for multi-color or multi-size variants."""
+    """
+    Fetch products grouped by product_code, merging variant shapes into a unified structure:
+    - variants: [{size, colour, stock, price, images}]
+    - availableSizes / availableColors (deduped)
+    - minPrice / maxPrice
+    """
     try:
-        category = request.args.get('category')
-        product_code_query = request.args.get('product_code')
+        category = request.args.get("category")
+        product_code_query = request.args.get("product_code")
         query = {}
         if category:
-            query['category'] = category
+            query["category"] = category
         if product_code_query:
-            query['product_code'] = product_code_query
+            query["product_code"] = product_code_query
 
         products_cursor = db.products.find(query)
         products_list = list(products_cursor)
-
         if not products_list:
             return jsonify([])
 
         product_map = {}
 
         for product in products_list:
-            code = product.get('product_code')
+            code = product.get("product_code")
             if not code:
                 continue
 
             if code not in product_map:
                 product_map[code] = {
-                    '_id': str(product['_id']),
-                    'product_code': code,
-                    'product_name': product.get('product_name', ''),
-                    'material': product.get('material', ''),
-                    'category': product.get('category', ''),
-                    'description': f"{product.get('material', '')} {product.get('category', '')}".strip(),
-                    'variants': [],
-                    'availableSizes': set(),
-                    'availableColors': set(),
-                    'totalStock': 0,
-                    'minPrice': float('inf'),
-                    'maxPrice': 0,
-                    'images': []
+                    "_id": str(product["_id"]),
+                    "product_code": code,
+                    "product_name": product.get("product_name", ""),
+                    "material": product.get("material", ""),
+                    "category": product.get("category", ""),
+                    "description": f"{product.get('material', '')} {product.get('category', '')}".strip(),
+                    "variants": [],
+                    "availableSizes": set(),
+                    "availableColors": set(),
+                    "totalStock": 0,
+                    "minPrice": float("inf"),
+                    "maxPrice": 0,
+                    "images": []
                 }
 
-            base_product = product_map[code]
+            base = product_map[code]
 
             variants = []
-            if isinstance(product.get('variants'), list):
-                variants = product['variants']
-            elif not variants:
+            if isinstance(product.get("variants"), list) and product.get("variants"):
+                variants = product["variants"]
+            else:
                 variants = [{
-                    'size': product.get('size', 'One Size'),
-                    'colour': product.get('colour', 'Standard'),
-                    'stock': product.get('stock') or product.get('quantity') or 0,
-                    'price': product.get('price', 0),
-                    'images': product.get('images', [])
+                    "size": product.get("size", "One Size"),
+                    "colour": product.get("colour", "Standard"),
+                    "stock": product.get("stock") or product.get("quantity") or 0,
+                    "price": product.get("price", 0),
+                    "images": product.get("images", []),
                 }]
 
             for var in variants:
-                size = var.get('size', product.get('size', 'One Size'))
-                color = var.get('colour', var.get('color', product.get('colour', 'Standard')))
-                stock = var.get('stock', var.get('quantity', product.get('quantity', 0)))
-                price = var.get('price', product.get('price', 0))
-                images = var.get('images', product.get('images', []))
-
+                size = str(var.get("size", product.get("size", "One Size")))
+                colour = str(var.get("colour", var.get("color", product.get("colour", "Standard"))))
                 try:
-                    stock = int(stock)
-                except:
+                    stock = int(var.get("stock", var.get("quantity", product.get("quantity", 0))) or 0)
+                except Exception:
                     stock = 0
                 try:
-                    price = float(price)
-                except:
-                    price = 0
+                    price = float(var.get("price", product.get("price", 0)) or 0)
+                except Exception:
+                    price = 0.0
+                images = var.get("images", product.get("images", [])) or []
 
-                variant_obj = {
-                    'size': str(size),
-                    'colour': str(color),
-                    'stock': stock,
-                    'price': price,
-                    'images': images
-                }
-
-                base_product['variants'].append(variant_obj)
-                base_product['availableSizes'].add(str(size))
-                base_product['availableColors'].add(str(color))
-                base_product['totalStock'] += stock
+                base["variants"].append({
+                    "size": size,
+                    "colour": colour,
+                    "stock": stock,
+                    "price": price,
+                    "images": images
+                })
+                base["availableSizes"].add(size)
+                base["availableColors"].add(colour)
+                base["totalStock"] += stock
                 if price > 0:
-                    base_product['minPrice'] = min(base_product['minPrice'], price)
-                    base_product['maxPrice'] = max(base_product['maxPrice'], price)
-
+                    base["minPrice"] = min(base["minPrice"], price)
+                    base["maxPrice"] = max(base["maxPrice"], price)
                 if images:
-                    base_product['images'].extend(images)
+                    base["images"].extend(images)
 
-        output = []
+        out = []
         for prod in product_map.values():
-            prod['availableSizes'] = sorted(list(prod['availableSizes']))
-            prod['availableColors'] = sorted(list(prod['availableColors']))
-            prod['images'] = list(dict.fromkeys(prod['images']))  # dedupe
+            prod["availableSizes"] = sorted(list(prod["availableSizes"]))
+            prod["availableColors"] = sorted(list(prod["availableColors"]))
+            seen = set()
+            deduped_imgs = []
+            for im in prod.get("images", []):
+                if im not in seen:
+                    seen.add(im)
+                    deduped_imgs.append(im)
+            prod["images"] = deduped_imgs
 
-            if prod['minPrice'] == float('inf'):
-                prod['minPrice'] = 0
-            if prod['maxPrice'] == 0:
-                prod['maxPrice'] = prod['minPrice']
+            if prod["minPrice"] == float("inf"):
+                prod["minPrice"] = 0
+            if prod["maxPrice"] == 0:
+                prod["maxPrice"] = prod["minPrice"]
 
-            if prod['variants']:
-                first_variant = prod['variants'][0]
-                prod['colour'] = first_variant.get('colour', '')
-                prod['images'] = first_variant.get('images', prod.get('images', []))
+            if prod["variants"]:
+                first = prod["variants"][0]
+                prod["colour"] = first.get("colour", "")
+                if not prod.get("images"):
+                    prod["images"] = first.get("images", [])
 
-            output.append(prod)
+            out.append(prod)
 
-        return jsonify(output)
-
+        return jsonify(out)
     except Exception as e:
-        current_app.logger.error(f"Error in get_products: {str(e)}")
-        return jsonify({'error': f'Failed to fetch products: {str(e)}'}), 500
+        current_app.logger.error(f"Error in get_products: {e}")
+        return jsonify({"error": f"Failed to fetch products: {str(e)}"}), 500
 
-@app.route('/api/products/<product_id>', methods=['GET'])
+@app.get("/api/products/<product_id>")
 def get_product(product_id):
-    try:
-        product = db.products.find_one({"_id": ObjectId(product_id)})
-    except Exception:
-        return jsonify({'error': 'Invalid product id'}), 400
+    _id = oid(product_id)
+    if not _id:
+        return jsonify({"error": "Invalid product id"}), 400
+    product = db.products.find_one({"_id": _id})
     if not product:
-        return jsonify({'error': 'Product not found'}), 404
-    
+        return jsonify({"error": "Product not found"}), 404
     return jsonify({
-        'id': str(product['_id']),
-        'product_code': product.get('product_code', ''),
-        'material': product.get('material', ''),
-        'category': product.get('category', ''),
-        'size': product.get('size', ''),
-        'colour': product.get('colour', ''),
-        'price': product.get('price', 0),
-        'images': product.get('images', []),
-        'stock': product.get('stock', None)
+        "id": str(product["_id"]),
+        "product_code": product.get("product_code", ""),
+        "product_name": product.get("product_name", ""),
+        "material": product.get("material", ""),
+        "category": product.get("category", ""),
+        "size": product.get("size", ""),
+        "colour": product.get("colour", ""),
+        "price": product.get("price", 0),
+        "images": product.get("images", []),
+        "stock": product.get("stock", None)
     })
 
-@app.route('/api/products/categories', methods=['GET'])
+@app.get("/api/products/categories")
 def get_categories():
-    categories = db.products.distinct("category")
-    return jsonify(categories)
+    try:
+        categories = db.products.distinct("category")
+        return jsonify(categories)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 # ---------- DEBUG ----------
-@app.route('/api/debug/products', methods=['GET'])
+@app.get("/api/debug/products")
 def debug_products():
     try:
         products = list(db.products.find().limit(10))
-        for product in products:
-            product['_id'] = str(product['_id'])
-        return jsonify({'count': len(products), 'products': products})
+        for p in products:
+            p["_id"] = str(p["_id"])
+        return jsonify({"count": len(products), "products": products})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
-@app.route('/api/debug/stock', methods=['GET'])
+@app.get("/api/debug/stock")
 def debug_stock():
     try:
         products = list(db.products.find().limit(10))
         stock_info = []
         for product in products:
-            all_fields = {k: v for k, v in product.items() if k != '_id'}
-            variants_type = 'None'
-            if 'variants' in product and product.get('variants') is not None:
-                variants_type = type(product.get('variants')).__name__
+            variants_type = "None"
+            if "variants" in product and product.get("variants") is not None:
+                variants_type = type(product.get("variants")).__name__
             stock_info.append({
-                'product_id': str(product['_id']),
-                'product_code': product.get('product_code'),
-                'product_name': product.get('product_name'),
-                'main_stock': product.get('stock'),
-                'quantity': product.get('quantity'),
-                'size': product.get('size'),
-                'colour': product.get('colour'),
-                'price': product.get('price'),
-                'variants_raw': product.get('variants'),
-                'variants_type': variants_type,
-                'all_fields': all_fields
+                "product_id": str(product["_id"]),
+                "product_code": product.get("product_code"),
+                "product_name": product.get("product_name"),
+                "main_stock": product.get("stock"),
+                "quantity": product.get("quantity"),
+                "size": product.get("size"),
+                "colour": product.get("colour"),
+                "price": product.get("price"),
+                "variants_raw": product.get("variants"),
+                "variants_type": variants_type,
+                "all_fields": {k: v for k, v in product.items() if k != "_id"}
             })
-        return jsonify({'count': len(stock_info), 'stock_data': stock_info})
+        return jsonify({"count": len(stock_info), "stock_data": stock_info})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
-@app.route('/api/debug/db', methods=['GET'])
+@app.get("/api/debug/db")
 def debug_db():
     try:
         collections = db.list_collection_names()
         products_count = db.products.count_documents({})
         users_count = db.users.count_documents({})
-        return jsonify({'collections': collections, 'products_count': products_count, 'users_count': users_count, 'status': 'connected'})
+        return jsonify({
+            "collections": collections,
+            "products_count": products_count,
+            "users_count": users_count,
+            "status": "connected"
+        })
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 # ---------- ADMIN CREATE PRODUCT ----------
-@app.route('/api/admin/products', methods=['POST'])
+@app.post("/api/admin/products")
 def create_product():
-    data = request.get_json()
-    if not data:
-        return jsonify({'error': 'JSON body required'}), 400
-    required = ['product_code', 'price', 'material', 'category']
+    data = request.get_json(silent=True) or {}
+    required = ["product_code", "price", "material", "category"]
     for r in required:
-        if r not in data:
-            return jsonify({'error': f'{r} is required'}), 400
+        if not data.get(r):
+            return jsonify({"error": f"{r} is required"}), 400
     try:
         doc = {
-            'product_code': str(data.get('product_code')),
-            'product_name': data.get('product_name', ''),
-            'material': data.get('material'),
-            'category': data.get('category'),
-            'size': data.get('size', 'One Size'),
-            'colour': data.get('colour', 'Standard'),
-            'price': float(data.get('price', 0)),
-            'images': data.get('images', ['/images/placeholder.jpg']),
-            'stock': int(data.get('stock', 10)),
-            'created_at': datetime.utcnow()
+            "product_code": str(data.get("product_code")),
+            "product_name": data.get("product_name", ""),
+            "material": data.get("material"),
+            "category": data.get("category"),
+            "size": data.get("size", "One Size"),
+            "colour": data.get("colour", "Standard"),
+            "price": float(data.get("price", 0)),
+            "images": data.get("images", ["/images/placeholder.jpg"]),
+            "stock": int(data.get("stock", 10)),
+            "created_at": datetime.utcnow()
         }
         res = db.products.insert_one(doc)
-        return jsonify({'message': 'Product created', 'id': str(res.inserted_id), 'product_code': doc['product_code']}), 201
+        return jsonify({
+            "message": "Product created",
+            "id": str(res.inserted_id),
+            "product_code": doc["product_code"]
+        }), 201
     except Exception as e:
-        return jsonify({'error': f'Failed to create product: {str(e)}'}), 500
+        return jsonify({"error": f"Failed to create product: {str(e)}"}), 500
+
+# ---------- REFERRAL CODES ----------
+@app.post("/api/admin/referral")
+@token_required
+def create_referral(current_user):
+    """Create a referral code. (You can later restrict to admin users)"""
+    data = request.get_json(silent=True) or {}
+    code = (data.get("code") or "").strip().upper()
+    percent = _sanitize_percent(data.get("percent", 5))
+    max_uses = int(data.get("max_uses", 0))  # 0 = unlimited
+    expires_at = data.get("expires_at")      # ISO string or None
+
+    if not code:
+        return jsonify({"error": "code is required"}), 400
+
+    doc = {
+        "code": code,
+        "percent": percent,
+        "max_uses": max_uses,
+        "uses": 0,
+        "created_by": str(current_user["_id"]),
+        "created_at": datetime.utcnow(),
+        "expires_at": expires_at
+    }
+
+    try:
+        db.referral_codes.insert_one(doc)
+        return jsonify({"message": "Referral code created", "code": code, "percent": percent}), 201
+    except Exception as e:
+        return jsonify({"error": f"Cannot create referral: {str(e)}"}), 400
+
+@app.get("/api/referral/validate")
+def validate_referral():
+    """?code=ABCD → returns {valid, code, percent, reason, uses, max_uses}"""
+    code = (request.args.get("code") or "").strip().upper()
+    if not code:
+        return jsonify({"valid": False, "reason": "code required"}), 400
+
+    ref = _load_referral(code)
+    ok, reason = _referral_is_valid(ref)
+    if not ok:
+        return jsonify({"valid": False, "reason": reason})
+
+    return jsonify({
+        "valid": True,
+        "code": ref["code"],
+        "percent": _sanitize_percent(ref.get("percent", 5)),
+        "uses": int(ref.get("uses", 0)),
+        "max_uses": int(ref.get("max_uses", 0))
+    })
 
 # ---------- USERS ----------
-@app.route('/api/register', methods=['POST'])
+@app.post("/api/register")
 def register():
-    data = request.get_json()
-    if not data or not data.get('email') or not data.get('password'):
-        return jsonify({'error': 'Email and password required'}), 400
+    data = request.get_json(silent=True) or {}
+    email = data.get("email")
+    password = data.get("password")
+    if not email or not password:
+        return jsonify({"error": "Email and password required"}), 400
 
-    if db.users.find_one({"email": data['email']}):
-        return jsonify({'error': 'Email already registered'}), 400
+    if db.users.find_one({"email": email}):
+        return jsonify({"error": "Email already registered"}), 400
 
     user = {
-        "username": data.get('username', data['email'].split('@')[0]),
-        "email": data['email'],
-        "password": generate_password_hash(data['password']),
+        "username": data.get("username", email.split("@")[0]),
+        "email": email,
+        "password": generate_password_hash(password),
         "created_at": datetime.utcnow(),
         "is_admin": False,
         "is_verified": False
@@ -361,128 +495,174 @@ def register():
     result = db.users.insert_one(user)
     token = make_jwt({"user_id": str(result.inserted_id)})
 
+    # Send verification mail (best-effort)
     try:
         verify_token = make_jwt({"user_id": str(result.inserted_id)}, expires_days=1)
         verify_url = f"{request.host_url.rstrip('/')}/api/verify-email?token={verify_token}"
         subject = "Verify your NAZMI Boutique account"
         body = f"Hi {user['username']},\n\nPlease verify your email by visiting: {verify_url}\n\nThanks!"
-        send_simple_email(subject, [user['email']], body)
+        send_simple_email(subject, [user["email"]], body)
     except Exception as e:
-        app.logger.error("Failed to send verification email: %s", e)
+        app.logger.error(f"Verification email failed: {e}")
 
-    return jsonify({'message': 'User registered', 'token': token}), 201
+    return jsonify({"message": "User registered", "token": token}), 201
 
-@app.route('/api/verify-email', methods=['GET'])
+@app.get("/api/verify-email")
 def verify_email():
-    token = request.args.get('token')
+    token = request.args.get("token")
     if not token:
-        return jsonify({'error': 'Token required'}), 400
+        return jsonify({"error": "Token required"}), 400
     try:
         data = decode_jwt(token)
-        user_id = data.get('user_id')
-        db.users.update_one({'_id': ObjectId(user_id)}, {'$set': {'is_verified': True}})
-        return jsonify({'message': 'Email verified successfully'})
+        user_id = data.get("user_id")
+        if not user_id:
+            return jsonify({"error": "Invalid token payload"}), 400
+        db.users.update_one({"_id": oid(user_id)}, {"$set": {"is_verified": True}})
+        return jsonify({"message": "Email verified successfully"})
     except Exception as e:
-        return jsonify({'error': 'Invalid or expired token', 'details': str(e)}), 400
+        return jsonify({"error": "Invalid or expired token", "details": str(e)}), 400
 
-@app.route('/api/login', methods=['POST'])
+@app.post("/api/login")
 def login():
-    data = request.get_json()
-    if not data or not data.get('email') or not data.get('password'):
-        return jsonify({'error': 'Email and password required'}), 400
-    user = db.users.find_one({"email": data['email']})
-    if not user or not check_password_hash(user['password'], data['password']):
-        return jsonify({'error': 'Invalid email or password'}), 401
-    token = make_jwt({"user_id": str(user['_id'])})
-    return jsonify({'message': 'Login successful', 'token': token})
+    data = request.get_json(silent=True) or {}
+    email = data.get("email")
+    password = data.get("password")
+    if not email or not password:
+        return jsonify({"error": "Email and password required"}), 400
+    user = db.users.find_one({"email": email})
+    if not user or not check_password_hash(user["password"], password):
+        return jsonify({"error": "Invalid email or password"}), 401
+    token = make_jwt({"user_id": str(user["_id"])})
+    return jsonify({"message": "Login successful", "token": token})
 
-@app.route('/api/user/profile', methods=['GET'])
+@app.get("/api/user/profile")
 @token_required
 def profile(current_user):
     return jsonify({
-        'id': str(current_user['_id']),
-        'username': current_user.get('username'),
-        'email': current_user.get('email'),
-        'is_admin': current_user.get('is_admin', False),
-        'is_verified': current_user.get('is_verified', False),
-        'created_at': current_user.get('created_at')
+        "id": str(current_user["_id"]),
+        "username": current_user.get("username"),
+        "email": current_user.get("email"),
+        "is_admin": current_user.get("is_admin", False),
+        "is_verified": current_user.get("is_verified", False),
+        "created_at": current_user.get("created_at")
     })
 
 # ---------- ORDERS (GUEST CHECKOUT ENABLED) ----------
-@app.route('/api/orders', methods=['POST'])
+@app.post("/api/orders")
 def create_order():
-    # If guest checkout disabled, require token
-    if not ALLOW_GUEST_CHECKOUT and not request.headers.get('Authorization'):
-        return jsonify({'error': 'Unauthorized'}), 401
+    """
+    Create an order. Supports optional `referral_code`.
+    Body:
+    {
+      items: [{product_id, quantity, price, size?, color?/colour?, variant_id?, product_code?}],
+      customer_name?, customer_email?, customer_phone?, shipping_address?, referral_code?
+    }
+    """
+    if not ALLOW_GUEST_CHECKOUT and not request.headers.get("Authorization"):
+        return jsonify({"error": "Unauthorized"}), 401
 
-    current_user = get_current_user_optional()  # may be None (guest)
-    data = request.get_json()
-    if not data or not data.get('items'):
-        return jsonify({'error': 'Order items required'}), 400
+    current_user = get_current_user_optional()
+    data = request.get_json(silent=True) or {}
+    items = data.get("items") or []
+    if not items:
+        return jsonify({"error": "Order items required"}), 400
 
+    # Subtotal (server-side)
     try:
-        total = sum([float(item['price']) * int(item['quantity']) for item in data['items']])
+        subtotal = sum([
+            _money(i.get("price", 0)) * int(i.get("quantity", 0))
+            for i in items
+        ], start=Decimal("0.00"))
     except Exception:
-        return jsonify({'error': 'Invalid items format'}), 400
+        return jsonify({"error": "Invalid items format"}), 400
+
+    # Referral apply
+    referral_code = (data.get("referral_code") or "").strip().upper() or None
+    discount_percent, discount_amount, grand_total, reason = _apply_referral(subtotal, referral_code) if referral_code else (Decimal("0"), Decimal("0.00"), _money(subtotal), None)
+    if referral_code and reason:
+        # If invalid, ignore discount but echo reason
+        referral_note = {"code": referral_code, "valid": False, "reason": reason}
+        referral_code = None
+        discount_percent = Decimal("0")
+        discount_amount = Decimal("0.00")
+        grand_total = _money(subtotal)
+    else:
+        referral_note = {"code": referral_code, "valid": bool(referral_code), "percent": float(discount_percent)}
 
     order = {
-        "user_id": ObjectId(current_user['_id']) if current_user else None,
+        "user_id": current_user and current_user.get("_id"),
         "order_number": f"ORD{int(datetime.utcnow().timestamp())}",
-        "customer_name": data.get('customer_name', (current_user.get('username') if current_user else 'Guest')),
-        "customer_email": data.get('customer_email', (current_user.get('email') if current_user else None)),
-        "customer_phone": data.get('customer_phone'),
-        "shipping_address": data.get('shipping_address'),
+        "customer_name": data.get("customer_name", (current_user.get("username") if current_user else "Guest")),
+        "customer_email": data.get("customer_email", (current_user.get("email") if current_user else None)),
+        "customer_phone": data.get("customer_phone"),
+        "shipping_address": data.get("shipping_address"),
         "status": "pending",
         "tracking_number": None,
-        "total_amount": total,
+        "subtotal": float(_money(subtotal)),
+        "discount_percent": float(discount_percent),
+        "discount_amount": float(_money(discount_amount)),
+        "grand_total": float(_money(grand_total)),
+        "referral_code": referral_code,
         "payment_status": "pending",
         "created_at": datetime.utcnow()
     }
-    order_id = db.orders.insert_one(order).inserted_id
+    res = db.orders.insert_one(order)
+    order_id = res.inserted_id
 
-    for item in data['items']:
+    # Items
+    for it in items:
+        pid = oid(it.get("product_id"))
+        vid = oid(it.get("variant_id")) if it.get("variant_id") else None
+        if not pid:
+            current_app.logger.warning(f"Skipping order item with invalid product_id: {it.get('product_id')}")
+            continue
         db.order_items.insert_one({
             "order_id": order_id,
-            "product_id": ObjectId(item['product_id']),
-            "quantity": int(item['quantity']),
-            "size": item.get('size'),
-            "colour": item.get('color'),
-            "price": float(item['price']),
-            "variant_id": ObjectId(item.get('variant_id')) if item.get('variant_id') else None,
-            "product_code": item.get('product_code')
+            "product_id": pid,
+            "quantity": int(it.get("quantity", 0)),
+            "size": it.get("size"),
+            "colour": it.get("color") or it.get("colour"),
+            "price": float(_money(it.get("price", 0))),
+            "variant_id": vid,
+            "product_code": it.get("product_code")
         })
 
-    # Reduce stock (variant-aware if present)
-    for item in data['items']:
+    # Reduce stock
+    for it in items:
+        pid = oid(it.get("product_id"))
+        if not pid:
+            continue
         try:
-            product = db.products.find_one({"_id": ObjectId(item['product_id'])})
-            if product and 'variants' in product and product['variants']:
+            product = db.products.find_one({"_id": pid})
+            qty = int(it.get("quantity", 0))
+            if qty <= 0:
+                continue
+            if product and product.get("variants"):
                 db.products.update_one(
-                    {
-                        "_id": ObjectId(item['product_id']),
-                        "variants.size": item.get('size'),
-                        "variants.colour": item.get('color')
-                    },
-                    {"$inc": {"variants.$.stock": -int(item['quantity'])}}
+                    {"_id": pid, "variants.size": it.get("size"), "variants.colour": (it.get("color") or it.get("colour"))},
+                    {"$inc": {"variants.$.stock": -qty}}
                 )
             else:
-                db.products.update_one(
-                    {"_id": ObjectId(item['product_id'])},
-                    {"$inc": {"stock": -int(item['quantity'])}}
-                )
+                db.products.update_one({"_id": pid}, {"$inc": {"stock": -qty}})
         except Exception as e:
-            current_app.logger.error(f"Stock update failed for product {item['product_id']}: {str(e)}")
+            current_app.logger.error(f"Stock update failed for product {pid}: {e}")
 
-    # Email: customer + admin copy
+    # Emails (best-effort)
     try:
-        if order.get('customer_email'):
+        if order.get("customer_email"):
             subject = f"Order Confirmation - {order['order_number']}"
-            body = (
-                f"Dear {order['customer_name']},\n\n"
-                f"Your order {order['order_number']} has been placed.\n"
-                f"Total: ₹{order['total_amount']}\n\nThanks for shopping."
-            )
-            send_simple_email(subject, [order['customer_email']], body)
+            body_lines = [
+                f"Dear {order['customer_name']},",
+                "",
+                f"Your order {order['order_number']} has been placed.",
+                f"Subtotal: ₹{order['subtotal']}",
+            ]
+            if order["discount_percent"] > 0:
+                body_lines.append(f"Referral Discount ({order['discount_percent']}%): -₹{order['discount_amount']}")
+            body_lines.append(f"Grand Total: ₹{order['grand_total']}")
+            body_lines.append("")
+            body_lines.append("Thanks for shopping.")
+            send_simple_email(subject, [order["customer_email"]], "\n".join(body_lines))
 
         admin_subject = f"New Order: {order['order_number']}"
         admin_text = (
@@ -491,7 +671,10 @@ def create_order():
             f"Phone: {order.get('customer_phone')}\n"
             f"Email: {order.get('customer_email')}\n"
             f"Address: {order.get('shipping_address')}\n"
-            f"Total: ₹{order['total_amount']}\n"
+            f"Subtotal: ₹{order['subtotal']}\n"
+            f"Discount: {order['discount_percent']}% (₹{order['discount_amount']})\n"
+            f"Grand Total: ₹{order['grand_total']}\n"
+            f"Referral: {referral_note}\n"
             f"Status: {order['status']}\n"
         )
         send_admin_plain(admin_subject, admin_text)
@@ -499,231 +682,262 @@ def create_order():
         current_app.logger.error(f"Order email error: {e}")
 
     return jsonify({
-        'message': 'Order created',
-        'order_number': order['order_number'],
-        'order_id': str(order_id),
-        'total_amount': total
+        "message": "Order created",
+        "order_number": order["order_number"],
+        "order_id": str(order_id),
+        "subtotal": order["subtotal"],
+        "discount_percent": order["discount_percent"],
+        "discount_amount": order["discount_amount"],
+        "grand_total": order["grand_total"]
     }), 201
 
-@app.route('/api/orders/<order_number>', methods=['GET'])
+@app.get("/api/orders/<order_number>")
 def track_order(order_number):
     order = db.orders.find_one({"order_number": order_number})
     if not order:
-        return jsonify({'error': 'Order not found'}), 404
+        return jsonify({"error": "Order not found"}), 404
     return jsonify({
-        'order_number': order['order_number'],
-        'status': order['status'],
-        'tracking_number': order.get('tracking_number'),
-        'customer_name': order.get('customer_name'),
-        'total_amount': order.get('total_amount'),
-        'created_at': order.get('created_at')
+        "order_number": order["order_number"],
+        "status": order["status"],
+        "tracking_number": order.get("tracking_number"),
+        "customer_name": order.get("customer_name"),
+        "subtotal": order.get("subtotal"),
+        "discount_percent": order.get("discount_percent"),
+        "discount_amount": order.get("discount_amount"),
+        "grand_total": order.get("grand_total"),
+        "created_at": order.get("created_at")
     })
 
-@app.route('/api/user/orders', methods=['GET'])
+@app.get("/api/user/orders")
 @token_required
 def get_user_orders(current_user):
-    orders = list(db.orders.find({"user_id": ObjectId(current_user['_id'])}).sort("created_at", -1))
+    orders = list(db.orders.find({"user_id": current_user["_id"]}).sort("created_at", -1))
     output = []
-    for order in orders:
+    for o in orders:
         output.append({
-            'order_number': order['order_number'],
-            'status': order['status'],
-            'total_amount': order['total_amount'],
-            'payment_status': order['payment_status'],
-            'created_at': order['created_at'],
-            'tracking_number': order.get('tracking_number')
+            "order_number": o["order_number"],
+            "status": o["status"],
+            "subtotal": o.get("subtotal"),
+            "discount_percent": o.get("discount_percent"),
+            "discount_amount": o.get("discount_amount"),
+            "grand_total": o.get("grand_total"),
+            "payment_status": o["payment_status"],
+            "created_at": o["created_at"],
+            "tracking_number": o.get("tracking_number")
         })
     return jsonify(output)
 
-# ---------- PAYMENTS (GUEST CHECKOUT ENABLED) ----------
-@app.route('/api/create-payment', methods=['POST'])
+# ---------- PAYMENTS ----------
+@app.post("/api/create-payment")
 def create_payment():
+    """
+    Create Razorpay order using server-side totals.
+    Body:
+      { order_number: "ORD...", ... }
+    If order_number is provided, amount = order.grand_total.
+    Otherwise (not recommended), amount = provided 'amount'.
+    """
     if not razorpay_client:
-        return jsonify({'error': 'Razorpay not configured on server'}), 500
+        return jsonify({"error": "Razorpay not configured on server"}), 500
 
-    if not ALLOW_GUEST_CHECKOUT and not request.headers.get('Authorization'):
-        return jsonify({'error': 'Unauthorized'}), 401
+    if not ALLOW_GUEST_CHECKOUT and not request.headers.get("Authorization"):
+        return jsonify({"error": "Unauthorized"}), 401
 
     current_user = get_current_user_optional()
-    data = request.get_json()
-    if not data or 'amount' not in data:
-        return jsonify({'error': 'Amount required (INR)'}), 400
+    data = request.get_json(silent=True) or {}
+    order_number = data.get("order_number")
+
+    if order_number:
+        order = db.orders.find_one({"order_number": order_number})
+        if not order:
+            return jsonify({"error": "Order not found"}), 404
+        amount_rs = _money(order.get("grand_total", 0))
+    else:
+        # Fallback (less secure): accept client amount if no order yet
+        if "amount" not in data:
+            return jsonify({"error": "Amount or order_number required"}), 400
+        amount_rs = _money(data["amount"])
 
     try:
         payment = razorpay_client.order.create({
-            "amount": int(float(data['amount']) * 100),  # paise
+            "amount": int(amount_rs * 100),  # paise
             "currency": "INR",
             "payment_capture": 1,
             "notes": {
-                "order_number": data.get('order_number'),
-                "purpose": data.get('purpose', 'Product Purchase'),
-                "user_id": str(current_user['_id']) if current_user else "",
-                "user_email": current_user.get('email') if current_user else ""
+                "order_number": order_number or "",
+                "purpose": data.get("purpose", "Product Purchase"),
+                "user_id": str(current_user["_id"]) if current_user else "",
+                "user_email": current_user.get("email") if current_user else ""
             }
         })
 
         # Optional: persist stub
         try:
-            payments_dir = os.path.join('instance', 'payments')
+            payments_dir = os.path.join("instance", "payments")
             os.makedirs(payments_dir, exist_ok=True)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"payment_{payment['id']}_{timestamp}.json"
-            with open(os.path.join(payments_dir, filename), 'w') as f:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            fname = f"payment_{payment['id']}_{ts}.json"
+            with open(os.path.join(payments_dir, fname), "w", encoding="utf-8") as f:
                 json.dump({
-                    'razorpay_order_id': payment['id'],
-                    'amount': float(data['amount']),
-                    'currency': 'INR',
-                    'user_id': str(current_user['_id']) if current_user else None,
-                    'user_email': current_user.get('email') if current_user else None,
-                    'order_number': data.get('order_number'),
-                    'created_at': datetime.utcnow().isoformat(),
-                    'status': 'created'
+                    "razorpay_order_id": payment["id"],
+                    "amount": float(amount_rs),
+                    "currency": "INR",
+                    "user_id": str(current_user["_id"]) if current_user else None,
+                    "user_email": current_user.get("email") if current_user else None,
+                    "order_number": order_number,
+                    "created_at": datetime.utcnow().isoformat(),
+                    "status": "created"
                 }, f, indent=2, default=str)
         except Exception as e:
             current_app.logger.warning(f"Saving payment stub failed: {e}")
 
         return jsonify({
-            'success': True,
-            'order_id': payment['id'],
-            'amount': payment['amount'],
-            'currency': payment['currency'],
-            'key': os.getenv('RAZORPAY_KEY_ID')
+            "success": True,
+            "order_id": payment["id"],
+            "amount": int(amount_rs * 100),
+            "currency": payment["currency"],
+            "key": RZP_KEY
         })
     except Exception as e:
         current_app.logger.error(f"Razorpay order creation error: {e}")
-        return jsonify({'error': 'Payment creation failed', 'details': str(e)}), 500
+        return jsonify({"error": "Payment creation failed", "details": str(e)}), 500
 
-@app.route('/api/payment-success', methods=['POST'])
+@app.post("/api/payment-success")
 def payment_success():
     if not razorpay_client:
-        return jsonify({'error': 'Payment service not configured'}), 500
+        return jsonify({"error": "Payment service not configured"}), 500
 
-    if not ALLOW_GUEST_CHECKOUT and not request.headers.get('Authorization'):
-        return jsonify({'error': 'Unauthorized'}), 401
+    if not ALLOW_GUEST_CHECKOUT and not request.headers.get("Authorization"):
+        return jsonify({"error": "Unauthorized"}), 401
 
     current_user = get_current_user_optional()
-    data = request.get_json()
-    if not data:
-        return jsonify({'error': 'JSON body required'}), 400
+    data = request.get_json(silent=True) or {}
 
+    payment_id = data.get("razorpay_payment_id")
+    order_id = data.get("razorpay_order_id")
+    signature = data.get("razorpay_signature")
+    order_number = data.get("order_number")
+    if not all([payment_id, order_id, signature]):
+        return jsonify({"error": "Missing payment details"}), 400
+
+    # Verify signature
     try:
-        payment_id = data.get('razorpay_payment_id')
-        order_id = data.get('razorpay_order_id')
-        signature = data.get('razorpay_signature')
-        order_number = data.get('order_number')
+        razorpay_client.utility.verify_payment_signature({
+            "razorpay_payment_id": payment_id,
+            "razorpay_order_id": order_id,
+            "razorpay_signature": signature
+        })
+    except Exception:
+        return jsonify({"error": "Payment verification failed"}), 400
 
-        if not all([payment_id, order_id, signature]):
-            return jsonify({'error': 'Missing payment details'}), 400
+    # Fetch payment details (best-effort)
+    try:
+        payment_details = razorpay_client.payment.fetch(payment_id)
+    except Exception:
+        payment_details = None
 
-        # Verify signature
-        try:
-            params_dict = {
-                'razorpay_payment_id': payment_id,
-                'razorpay_order_id': order_id,
-                'razorpay_signature': signature
-            }
-            razorpay_client.utility.verify_payment_signature(params_dict)
-        except Exception:
-            return jsonify({'error': 'Payment verification failed'}), 400
+    amount_paid = (payment_details["amount"] / 100) if payment_details else float(data.get("amount", 0))
+    currency = (payment_details.get("currency") if payment_details else "INR")
+    method = (payment_details.get("method") if payment_details else "unknown")
 
-        # Fetch payment details
-        try:
-            payment_details = razorpay_client.payment.fetch(payment_id)
-        except Exception:
-            payment_details = None
-
-        amount_paid = payment_details['amount'] / 100 if payment_details else float(data.get('amount', 0))
-        currency = payment_details.get('currency', 'INR') if payment_details else 'INR'
-        method = payment_details.get('method', 'card') if payment_details else 'unknown'
-
-        # Optional: persist success
-        try:
-            payments_dir = os.path.join('instance', 'payments')
-            os.makedirs(payments_dir, exist_ok=True)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"payment_{payment_id}_{timestamp}.json"
-            with open(os.path.join(payments_dir, filename), 'w') as f:
-                json.dump({
-                    'razorpay_payment_id': payment_id,
-                    'razorpay_order_id': order_id,
-                    'amount': amount_paid,
-                    'currency': currency,
-                    'user_id': str(current_user['_id']) if current_user else None,
-                    'user_email': current_user.get('email') if current_user else None,
-                    'payment_date': datetime.utcnow().isoformat(),
-                    'status': 'captured',
-                    'payment_method': method
-                }, f, indent=2, default=str)
-        except Exception as e:
-            current_app.logger.warning(f"Saving payment success failed: {e}")
-
-        # Update order to paid
-        if order_number:
+    # Mark order paid + bump referral uses if any
+    if order_number:
+        ord_doc = db.orders.find_one({"order_number": order_number})
+        if ord_doc:
             db.orders.update_one(
-                {"order_number": order_number},
+                {"_id": ord_doc["_id"]},
                 {"$set": {"payment_status": "paid", "status": "confirmed", "paid_at": datetime.utcnow()}}
             )
+            # increment referral uses safely AFTER payment captured
+            if ord_doc.get("referral_code"):
+                db.referral_codes.update_one({"code": ord_doc["referral_code"]}, {"$inc": {"uses": 1}})
 
-        # Email receipt (customer) + admin copy
-        try:
-            customer_email = (current_user.get('email') if current_user else None) or data.get('customer_email')
-            if customer_email:
-                subject = f"Payment Receipt - {payment_id}"
-                body = (
-                    f"Dear Customer,\n\nYour payment of ₹{amount_paid} was successful.\n"
-                    f"Payment ID: {payment_id}\n\nThank you for your purchase!"
-                )
-                send_simple_email(subject, [customer_email], body)
-
-            send_admin_plain(
-                f"Payment Captured: {order_number or order_id}",
-                f"Order: {order_number}\nPayment ID: {payment_id}\nAmount: ₹{amount_paid}\nMethod: {method}"
-            )
-        except Exception as e:
-            current_app.logger.error(f"Payment receipt email error: {e}")
-
-        return jsonify({'success': True, 'message': 'Payment verified successfully',
-                        'payment_id': payment_id, 'order_id': order_id})
+    # Optional: persist success
+    try:
+        payments_dir = os.path.join("instance", "payments")
+        os.makedirs(payments_dir, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        fname = f"payment_{payment_id}_{ts}.json"
+        with open(os.path.join(payments_dir, fname), "w", encoding="utf-8") as f:
+            json.dump({
+                "razorpay_payment_id": payment_id,
+                "razorpay_order_id": order_id,
+                "amount": amount_paid,
+                "currency": currency,
+                "user_id": str(current_user["_id"]) if current_user else None,
+                "user_email": current_user.get("email") if current_user else None,
+                "order_number": order_number,
+                "payment_date": datetime.utcnow().isoformat(),
+                "status": "captured",
+                "payment_method": method
+            }, f, indent=2, default=str)
     except Exception as e:
-        current_app.logger.error(f"Payment success processing error: {e}")
-        return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
+        current_app.logger.warning(f"Saving payment success failed: {e}")
+
+    # Emails (best-effort)
+    try:
+        customer_email = (current_user.get("email") if current_user else None) or data.get("customer_email")
+        if customer_email:
+            subject = f"Payment Receipt - {payment_id}"
+            body = (
+                f"Dear Customer,\n\nYour payment of ₹{amount_paid} was successful.\n"
+                f"Payment ID: {payment_id}\n\nThank you for your purchase!"
+            )
+            send_simple_email(subject, [customer_email], body)
+
+        send_admin_plain(
+            f"Payment Captured: {order_number or order_id}",
+            f"Order: {order_number}\nPayment ID: {payment_id}\nAmount: ₹{amount_paid}\nMethod: {method}"
+        )
+    except Exception as e:
+        current_app.logger.error(f"Payment receipt email error: {e}")
+
+    return jsonify({
+        "success": True,
+        "message": "Payment verified successfully",
+        "payment_id": payment_id,
+        "order_id": order_id
+    })
 
 # ---------- SUBSCRIPTION ----------
-@app.route('/api/subscribe', methods=['POST'])
+@app.post("/api/subscribe")
 def subscribe():
-    data = request.get_json()
-    email = data.get('email') if data else None
+    data = request.get_json(silent=True) or {}
+    email = data.get("email")
     if not email:
-        return jsonify({'error': 'Email required'}), 400
+        return jsonify({"error": "Email required"}), 400
 
-    db.newsletter.update_one({'email': email}, {'$set': {'email': email, 'subscribed_at': datetime.utcnow()}}, upsert=True)
-    send_simple_email('Subscribed to NAZMI Newsletter', [email], 'Thanks for subscribing to our newsletter!')
-    return jsonify({'message': 'Subscribed'})
-# ------------------- RUN APP -------------------
+    db.newsletter.update_one(
+        {"email": email},
+        {"$set": {"email": email, "subscribed_at": datetime.utcnow()}},
+        upsert=True
+    )
+    send_simple_email("Subscribed to NAZMI Newsletter", [email],
+                      "Thanks for subscribing to our newsletter!")
+    return jsonify({"message": "Subscribed"})
 
-# ✅ Add this test email route before the app.run section
-@app.route('/api/send-test-email', methods=['GET'])
+# ---------- TEST EMAIL ----------
+@app.get("/api/send-test-email")
 def send_test_email():
-    """Simple route to test email configuration."""
     try:
         msg = Message(
             subject="Nazmi Boutique Email Test",
-            recipients=["nazmiboutique1@gmail.com"],
+            recipients=[ADMIN_EMAIL],
             body="✅ Test email from Flask app — your Gmail SMTP settings work!"
         )
         mail.send(msg)
         return jsonify({"message": "Test email sent successfully!"}), 200
     except Exception as e:
-        print("Email send error:", e)
+        current_app.logger.error(f"Email send error: {e}")
         return jsonify({"error": str(e)}), 500
 
-
-if __name__ == '__main__':
+# ------------------- RUN -------------------
+if __name__ == "__main__":
     print("🚀 Starting NAZMI Boutique Backend...")
-    print("📍 Listening on http://127.0.0.1:5000")
-    print("🔍 Debug endpoints available:")
-    print("   - http://127.0.0.1:5000/api/debug/db")
-    print("   - http://127.0.0.1:5000/api/debug/products")
-    print("   - http://127.0.0.1:5000/api/debug/stock")
-    print("   - http://127.0.0.1:5000/api/send-test-email  ✅ (new)")
-    app.run(debug=True, port=5000, host='0.0.0.0')
+    print(f"📍 Listening on http://127.0.0.1:5000  (CORS origin: {CLIENT_ORIGIN})")
+    print("🔍 Debug endpoints:")
+    print("   - /api/debug/db")
+    print("   - /api/debug/products")
+    print("   - /api/debug/stock")
+    print("   - /api/send-test-email")
+    app.run(debug=True, port=5000, host="0.0.0.0")

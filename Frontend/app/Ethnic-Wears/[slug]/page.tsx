@@ -94,33 +94,62 @@ const inr = (n: number | string) => `₹${Number(n || 0).toLocaleString("en-IN")
 const norm = (s?: string) => (s ?? "").trim().toLowerCase();
 const same = (a?: string, b?: string) => norm(a) === norm(b);
 
+// --- Canonical key helpers for robust dedupe ---
+const firstImage = (p: Product) =>
+  Array.isArray(p.images) && p.images.length ? p.images[0] : "";
+
+// Extract Cloudinary public_id from a URL, e.g.
+// https://res.cloudinary.com/.../upload/v1761222954/cream5_nrsopq.jpg -> cream5_nrsopq
+const cloudinaryPublicId = (url: string) => {
+  try {
+    const path = new URL(url).pathname;                 // /dq5x.../upload/v176.../cream5_nrsopq.jpg
+    const parts = path.split("/").filter(Boolean);
+    const last = parts[parts.length - 1];               // cream5_nrsopq.jpg
+    return last.replace(/\.[a-z0-9]+$/i, "");           // cream5_nrsopq
+  } catch {
+    const last = url.split("/").filter(Boolean).pop() || "";
+    return last.replace(/\.[a-z0-9]+$/i, "");
+  }
+};
+
+const canonicalKey = (p: Product) => {
+  const name = norm(p.product_name);
+  const mat  = norm(p.material);
+  const imgK = cloudinaryPublicId(firstImage(p));
+  return `${name}__${mat}__${imgK}`;
+};
+
+// One-time shuffle helper (non-mutating)
+function shuffleInPlace<T>(arr: T[]): T[] {
+  const a = [...arr];
+  const rand =
+    typeof crypto !== "undefined" && "getRandomValues" in crypto
+      ? () => crypto.getRandomValues(new Uint32Array(1))[0] / 2 ** 32
+      : Math.random;
+  for (let m = a.length - 1; m > 0; m--) {
+    const i = Math.floor(rand() * (m + 1));
+    [a[m], a[i]] = [a[i], a[m]];
+  }
+  return a;
+}
+
 declare global {
   interface Window {
     Razorpay?: any;
   }
 }
 
-/* ========= Lazy-load Razorpay ========= */
-async function loadRazorpay(): Promise<boolean> {
-  if (typeof window === "undefined") return false;
-  if (window.Razorpay) return true;
-  return new Promise((resolve) => {
-    const s = document.createElement("script");
-    s.src = "https://checkout.razorpay.com/v1/checkout.js";
-    s.async = true;
-    s.onload = () => resolve(true);
-    s.onerror = () => resolve(false);
-    document.body.appendChild(s);
-  });
-}
-
-/* ========= New Arrivals (client fetch) ========= */
-function NewArrivalsClient({
+/* ========= Related Products (CARD GRID under product) ========= */
+function RelatedProductsClient({
   currentId,
-  limit = 10,
-  title = "New Arrivals",
+  currentSlug,
+  category,
+  limit = 12,
+  title = "Related Products",
 }: {
-  currentId?: string;
+  currentId: string;
+  currentSlug?: string;
+  category: string;
   limit?: number;
   title?: string;
 }) {
@@ -128,39 +157,54 @@ function NewArrivalsClient({
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    if (!category) return;
     let alive = true;
     (async () => {
       setLoading(true);
       try {
-        // Prefer same-origin API to avoid CORS in prod; fall back to API_BASE if provided
         const base = API_BASE || "";
-        const url = `${base ? base : ""}/api/products?sort=new&limit=${limit + 1}`;
+        // Fetch extra, then filter & dedupe locally
+        const url = `${base}/api/products?limit=${limit + 32}`;
         const r = await fetch(url, { cache: "no-store" });
         if (!r.ok) throw new Error("failed");
         const data = await r.json();
-        const list: any[] = Array.isArray(data?.products)
+        const list: Product[] = Array.isArray(data?.products)
           ? data.products
           : Array.isArray(data)
           ? data
           : [];
 
-        const mapped: CardProduct[] = list
-          .map((p) => ({
-            _id: p._id,
-            slug: p.slug,
-            name: p.product_name || p.name || "Untitled",
-            category: p.category,
-            images:
-              (Array.isArray(p.images) && p.images.length
-                ? p.images
-                : p.image
-                ? [p.image]
-                : []) || [],
-            minPrice: p.minPrice ?? p.price,
-            maxPrice: p.maxPrice ?? p.price,
-          }))
-          .filter((p) => (currentId ? p._id !== currentId : true))
-          .slice(0, limit);
+        // 1) same category
+        const sameCategory = list.filter(
+          (p) => p && p.category && p._id && same(p.category, category)
+        );
+
+        // 2) exclude current product by id AND by slug
+        const notCurrent = sameCategory.filter(
+          (p) => String(p._id) !== String(currentId) && !same(p.slug, currentSlug)
+        );
+
+        // 3) de-duplicate using canonicalKey (name + material + first image id)
+        const seen = new Set<string>();
+        const unique: Product[] = [];
+        for (const p of notCurrent) {
+          const k = canonicalKey(p);
+          if (seen.has(k)) continue;
+          seen.add(k);
+          unique.push(p);
+        }
+
+        // 4) SHUFFLE, then map → CardProduct and slice
+        const shuffled = shuffleInPlace(unique);
+        const mapped: CardProduct[] = shuffled.slice(0, limit).map((p) => ({
+          _id: String(p._id),
+          slug: p.slug || makeSlug(p),
+          name: p.product_name || "Untitled",
+          category: p.category,
+          images: (Array.isArray(p.images) && p.images.length ? p.images : ["/images/placeholder.jpg"]).map(imgUrl),
+          minPrice: p.minPrice,
+          maxPrice: p.maxPrice,
+        }));
 
         if (alive) setRows(mapped);
       } catch {
@@ -172,7 +216,7 @@ function NewArrivalsClient({
     return () => {
       alive = false;
     };
-  }, [currentId, limit]);
+  }, [category, currentId, currentSlug, limit]);
 
   if (loading || rows.length === 0) return null;
 
@@ -181,15 +225,13 @@ function NewArrivalsClient({
       <div className="max-w-7xl mx-auto px-4 sm:px-6">
         <div className="flex items-end justify-between mb-6 sm:mb-8">
           <div>
-            <p className="text-xs uppercase tracking-wider text-gray-500">Latest drop</p>
-            <h2 className="text-2xl sm:text-3xl font-bold text-gray-900 mt-1">
-              {title}{" "}
-              <span className="text-gray-400 text-base align-top">({rows.length})</span>
-            </h2>
+            <h2 className="text-2xl sm:text-3xl font-bold text-gray-900">{title}</h2>
+            <p className="text-sm text-gray-500 mt-1">Similar items in {category}</p>
           </div>
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3.5 sm:gap-5">
+        {/* 🔥 Card grid */}
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 sm:gap-6">
           {rows.map((p) => (
             <ProductCardClient key={p._id} p={p} />
           ))}
@@ -388,7 +430,7 @@ export default function ProductDetailPage() {
   const price = variant ? variant.price : product?.minPrice || 0;
   const stock = variant ? variant.stock : product?.totalStock || 0;
 
-  // ===== Shipping calculations (based on current qty & variant price) =====
+  // ===== Shipping calculations =====
   const unitPrice = Number(variant?.price ?? 0);
   const subtotal = unitPrice * qty;
   const shippingFee = subtotal >= SHIPPING_THRESHOLD ? 0 : SHIPPING_FEE;
@@ -838,8 +880,13 @@ export default function ProductDetailPage() {
         </div>
       </div>
 
-      {/* ⭐ New Arrivals grid right under the product */}
-      <NewArrivalsClient currentId={product._id} limit={10} title="New Arrivals" />
+      {/* ✅ Related products grid */}
+      <RelatedProductsClient
+        currentId={product._id}
+        currentSlug={product.slug || makeSlug(product)}
+        category={product.category}
+        limit={12}
+      />
 
       {/* Payment Modal */}
       {showPaymentModal && product && variant && (
@@ -930,7 +977,9 @@ export default function ProductDetailPage() {
                           <span className="text-lg font-semibold text-gray-900">{inr(grandTotal)}</span>
                         </div>
                         {shippingFee > 0 && (
-                          <p className="text-xs text-gray-500 pt-1">Add items worth {inr(SHIPPING_THRESHOLD - subtotal)} more to get <b>Free Shipping</b>.</p>
+                          <p className="text-xs text-gray-500 pt-1">
+                            Add items worth {inr(SHIPPING_THRESHOLD - subtotal)} more to get <b>Free Shipping</b>.
+                          </p>
                         )}
                       </div>
                     </div>
@@ -958,7 +1007,6 @@ export default function ProductDetailPage() {
                       onClick={async () => {
                         if (!product || !variant) return;
 
-                        // Validate shipping
                         const required: (keyof ShippingInfo)[] = [
                           "name",
                           "email",
@@ -980,10 +1028,7 @@ export default function ProductDetailPage() {
                           alert(`Only ${variant.stock} available.`);
                           return;
                         }
-                        if (!RZP_KEY_ID) {
-                          alert("Razorpay key is not configured.");
-                          return;
-                        }
+                        
 
                         setOrderProcessing(true);
                         try {
@@ -1027,7 +1072,7 @@ export default function ProductDetailPage() {
                           const orderJson = await createOrderRes.json();
                           const internalOrderId = orderJson?.order_id || orderJson?._id || orderJson?.id;
 
-                          // 2) Create Razorpay order in backend (amount in paise)
+                          // 2) Create Razorpay order in backend
                           const payRes = await fetch("/api/payments/razorpay/create-order", {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
@@ -1040,11 +1085,19 @@ export default function ProductDetailPage() {
                           const payJson = await payRes.json();
                           const rzpOrderId = payJson?.order_id || payJson?.id;
 
-                          // 3) Load Razorpay and open checkout
-                          const ok = await loadRazorpay();
-                          if (!ok || !window.Razorpay) {
-                            throw new Error("Failed to load Razorpay SDK");
-                          }
+                          const ok = await (async () => {
+                            if (typeof window === "undefined") return false;
+                            if (window.Razorpay) return true;
+                            return new Promise<boolean>((resolve) => {
+                              const s = document.createElement("script");
+                              s.src = "https://checkout.razorpay.com/v1/checkout.js";
+                              s.async = true;
+                              s.onload = () => resolve(true);
+                              s.onerror = () => resolve(false);
+                              document.body.appendChild(s);
+                            });
+                          })();
+                          if (!ok || !window.Razorpay) throw new Error("Failed to load Razorpay SDK");
 
                           const rzp = new (window as any).Razorpay({
                             key: RZP_KEY_ID,
@@ -1078,7 +1131,6 @@ export default function ProductDetailPage() {
                               }, 1600);
                             },
                             modal: { ondismiss: () => { setOrderProcessing(false); } },
-                            config: { display: {} },
                           });
 
                           rzp.open();
