@@ -1,4 +1,4 @@
-# C:\NAZMI_BOUTIQUE\backend\app.py
+# C:\NAZMI_BOUTIQUE\Backend\app.py
 import os
 import json
 import logging
@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from functools import wraps
 from decimal import Decimal, ROUND_HALF_UP
 
-from flask import Flask, request, jsonify, current_app
+from flask import Flask, request, jsonify, current_app, Blueprint
 from flask_cors import CORS
 from flask_pymongo import PyMongo
 from flask_mail import Mail, Message
@@ -15,6 +15,8 @@ from dotenv import load_dotenv
 from bson import ObjectId
 import razorpay
 import jwt
+import hmac
+import hashlib
 
 # ------------------- LOAD .env -------------------
 load_dotenv()
@@ -24,8 +26,11 @@ app = Flask(__name__)
 
 # CORS (allow Next.js dev host)
 CLIENT_ORIGIN = os.getenv("CLIENT_ORIGIN", "http://localhost:3000")
-CORS(app, supports_credentials=True,
-     resources={r"/api/*": {"origins": [CLIENT_ORIGIN]}})
+CORS(
+    app,
+    supports_credentials=True,
+    resources={r"/api/*": {"origins": [CLIENT_ORIGIN]}},
+)
 
 # ------------------- CONFIG -------------------
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -51,21 +56,25 @@ JWT_EXPIRES_DAYS = int(os.getenv("JWT_EXPIRES_DAYS", 7))
 ALLOW_GUEST_CHECKOUT = _env_bool("ALLOW_GUEST_CHECKOUT", True)
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "nazmiboutique1@gmail.com")
 
+# Razorpay
+RZP_KEY = os.getenv("RAZORPAY_KEY_ID")
+RZP_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
+RZP_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET")  # optional but recommended
+
 # ------------------- EXTENSIONS -------------------
 mongo = PyMongo(app)
 db = mongo.db
 mail = Mail(app)
 
-# Razorpay
-razorpay_client = None
-RZP_KEY = os.getenv("RAZORPAY_KEY_ID")
-RZP_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
-if RZP_KEY and RZP_SECRET:
+# Lazy client helper (safe if keys missing)
+def get_razorpay_client():
+    if not (RZP_KEY and RZP_SECRET):
+        return None
     try:
-        razorpay_client = razorpay.Client(auth=(RZP_KEY, RZP_SECRET))
+        return razorpay.Client(auth=(RZP_KEY, RZP_SECRET))
     except Exception as e:
         app.logger.error(f"Razorpay init failed: {e}")
-        razorpay_client = None
+        return None
 
 # ------------------- HELPERS -------------------
 def _money(val) -> Decimal:
@@ -182,7 +191,7 @@ def _apply_referral(subtotal: Decimal, code: str):
     grand_total = _money(subtotal - discount_amount)
     return percent, discount_amount, grand_total, None
 
-# ------------------- ROUTES -------------------
+# ------------------- ROUTES (General) -------------------
 @app.get("/")
 def home():
     return jsonify({"message": "Welcome to NAZMI Boutique API", "status": "running"})
@@ -411,7 +420,8 @@ def create_product():
             "price": float(data.get("price", 0)),
             "images": data.get("images", ["/images/placeholder.jpg"]),
             "stock": int(data.get("stock", 10)),
-            "created_at": datetime.utcnow()
+            "created_at":datetime.now(datetime.UTC)
+
         }
         res = db.products.insert_one(doc)
         return jsonify({
@@ -478,6 +488,7 @@ def register():
     data = request.get_json(silent=True) or {}
     email = data.get("email")
     password = data.get("password")
+
     if not email or not password:
         return jsonify({"error": "Email and password required"}), 400
 
@@ -727,17 +738,32 @@ def get_user_orders(current_user):
         })
     return jsonify(output)
 
-# ---------- PAYMENTS ----------
-@app.post("/api/create-payment")
-def create_payment():
+# ------------------- PAYMENTS BLUEPRINT (/api/payments) -------------------
+payments_bp = Blueprint("payments", __name__, url_prefix="/api/payments")
+
+def _persist_payment_stub(kind: str, base_name: str, payload: dict):
+    try:
+        payments_dir = os.path.join("instance", "payments")
+        os.makedirs(payments_dir, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        fname = f"{kind}_{base_name}_{ts}.json"
+        with open(os.path.join(payments_dir, fname), "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, default=str)
+    except Exception as e:
+        current_app.logger.warning(f"Saving {kind} stub failed: {e}")
+
+@payments_bp.post("/create-order")
+def payments_create_order():
     """
     Create Razorpay order using server-side totals.
     Body:
-      { order_number: "ORD...", ... }
-    If order_number is provided, amount = order.grand_total.
-    Otherwise (not recommended), amount = provided 'amount'.
+      { order_number?: "ORD...", amount?: number, purpose?: string }
+    If order_number is provided, amount = order.grand_total (server truth).
+    Otherwise (fallback), amount must be provided by client (paise will be handled server-side).
+    Returns: { success, order_id, amount, currency, key }
     """
-    if not razorpay_client:
+    client = get_razorpay_client()
+    if not client:
         return jsonify({"error": "Razorpay not configured on server"}), 500
 
     if not ALLOW_GUEST_CHECKOUT and not request.headers.get("Authorization"):
@@ -753,13 +779,15 @@ def create_payment():
             return jsonify({"error": "Order not found"}), 404
         amount_rs = _money(order.get("grand_total", 0))
     else:
-        # Fallback (less secure): accept client amount if no order yet
         if "amount" not in data:
             return jsonify({"error": "Amount or order_number required"}), 400
-        amount_rs = _money(data["amount"])
+        # amount may be in paise from FE helper or in rupees; normalize
+        amt = Decimal(str(data["amount"]))
+        # treat values >= 1000 as paise; else as rupees
+        amount_rs = _money(amt / 100 if amt >= 1000 else amt)
 
     try:
-        payment = razorpay_client.order.create({
+        payment = client.order.create({
             "amount": int(amount_rs * 100),  # paise
             "currency": "INR",
             "payment_capture": 1,
@@ -771,25 +799,16 @@ def create_payment():
             }
         })
 
-        # Optional: persist stub
-        try:
-            payments_dir = os.path.join("instance", "payments")
-            os.makedirs(payments_dir, exist_ok=True)
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            fname = f"payment_{payment['id']}_{ts}.json"
-            with open(os.path.join(payments_dir, fname), "w", encoding="utf-8") as f:
-                json.dump({
-                    "razorpay_order_id": payment["id"],
-                    "amount": float(amount_rs),
-                    "currency": "INR",
-                    "user_id": str(current_user["_id"]) if current_user else None,
-                    "user_email": current_user.get("email") if current_user else None,
-                    "order_number": order_number,
-                    "created_at": datetime.utcnow().isoformat(),
-                    "status": "created"
-                }, f, indent=2, default=str)
-        except Exception as e:
-            current_app.logger.warning(f"Saving payment stub failed: {e}")
+        _persist_payment_stub("order", payment["id"], {
+            "razorpay_order_id": payment["id"],
+            "amount": float(amount_rs),
+            "currency": "INR",
+            "user_id": str(current_user["_id"]) if current_user else None,
+            "user_email": current_user.get("email") if current_user else None,
+            "order_number": order_number,
+            "created_at": datetime.utcnow().isoformat(),
+            "status": "created"
+        })
 
         return jsonify({
             "success": True,
@@ -802,9 +821,20 @@ def create_payment():
         current_app.logger.error(f"Razorpay order creation error: {e}")
         return jsonify({"error": "Payment creation failed", "details": str(e)}), 500
 
-@app.post("/api/payment-success")
-def payment_success():
-    if not razorpay_client:
+@payments_bp.post("/verify")
+def payments_verify_success():
+    """
+    Verify signature after checkout.
+    Body:
+      {
+        razorpay_payment_id, razorpay_order_id, razorpay_signature,
+        order_number?, amount?
+        customer_email?
+      }
+    Marks order paid, bumps referral uses, stores a receipt stub, emails customer/admin.
+    """
+    client = get_razorpay_client()
+    if not client:
         return jsonify({"error": "Payment service not configured"}), 500
 
     if not ALLOW_GUEST_CHECKOUT and not request.headers.get("Authorization"):
@@ -817,12 +847,13 @@ def payment_success():
     order_id = data.get("razorpay_order_id")
     signature = data.get("razorpay_signature")
     order_number = data.get("order_number")
+
     if not all([payment_id, order_id, signature]):
         return jsonify({"error": "Missing payment details"}), 400
 
     # Verify signature
     try:
-        razorpay_client.utility.verify_payment_signature({
+        client.utility.verify_payment_signature({
             "razorpay_payment_id": payment_id,
             "razorpay_order_id": order_id,
             "razorpay_signature": signature
@@ -832,7 +863,7 @@ def payment_success():
 
     # Fetch payment details (best-effort)
     try:
-        payment_details = razorpay_client.payment.fetch(payment_id)
+        payment_details = client.payment.fetch(payment_id)
     except Exception:
         payment_details = None
 
@@ -848,31 +879,21 @@ def payment_success():
                 {"_id": ord_doc["_id"]},
                 {"$set": {"payment_status": "paid", "status": "confirmed", "paid_at": datetime.utcnow()}}
             )
-            # increment referral uses safely AFTER payment captured
             if ord_doc.get("referral_code"):
                 db.referral_codes.update_one({"code": ord_doc["referral_code"]}, {"$inc": {"uses": 1}})
 
-    # Optional: persist success
-    try:
-        payments_dir = os.path.join("instance", "payments")
-        os.makedirs(payments_dir, exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        fname = f"payment_{payment_id}_{ts}.json"
-        with open(os.path.join(payments_dir, fname), "w", encoding="utf-8") as f:
-            json.dump({
-                "razorpay_payment_id": payment_id,
-                "razorpay_order_id": order_id,
-                "amount": amount_paid,
-                "currency": currency,
-                "user_id": str(current_user["_id"]) if current_user else None,
-                "user_email": current_user.get("email") if current_user else None,
-                "order_number": order_number,
-                "payment_date": datetime.utcnow().isoformat(),
-                "status": "captured",
-                "payment_method": method
-            }, f, indent=2, default=str)
-    except Exception as e:
-        current_app.logger.warning(f"Saving payment success failed: {e}")
+    _persist_payment_stub("payment", payment_id, {
+        "razorpay_payment_id": payment_id,
+        "razorpay_order_id": order_id,
+        "amount": amount_paid,
+        "currency": currency,
+        "user_id": str(current_user["_id"]) if current_user else None,
+        "user_email": current_user.get("email") if current_user else None,
+        "order_number": order_number,
+        "payment_date": datetime.utcnow().isoformat(),
+        "status": "captured",
+        "payment_method": method
+    })
 
     # Emails (best-effort)
     try:
@@ -898,6 +919,133 @@ def payment_success():
         "payment_id": payment_id,
         "order_id": order_id
     })
+
+@payments_bp.post("/refund")
+def payments_refund():
+    """
+    Create a refund.
+    Body: { payment_id: string, amount?: number (rupees or paise) }
+    """
+    client = get_razorpay_client()
+    if not client:
+        return jsonify({"error": "Payment service not configured"}), 500
+
+    data = request.get_json(silent=True) or {}
+    payment_id = data.get("payment_id")
+    if not payment_id:
+        return jsonify({"error": "payment_id required"}), 400
+
+    amount = data.get("amount")  # optional
+    amount_paise = None
+    if amount is not None:
+        amt = Decimal(str(amount))
+        amount_paise = int((_money(amt / 100 if amt >= 1000 else amt)) * 100)
+
+    try:
+        refund = client.payment.refund(payment_id, {"amount": amount_paise} if amount_paise else {})
+        _persist_payment_stub("refund", refund["id"], refund)
+        return jsonify({"success": True, "refund": refund})
+    except Exception as e:
+        current_app.logger.error(f"Refund error: {e}")
+        return jsonify({"error": "Refund failed", "details": str(e)}), 500
+
+@payments_bp.get("/order/<order_id>")
+def payments_fetch_order(order_id):
+    client = get_razorpay_client()
+    if not client:
+        return jsonify({"error": "Payment service not configured"}), 500
+    try:
+        o = client.order.fetch(order_id)
+        return jsonify(o)
+    except Exception as e:
+        return jsonify({"error": "Fetch order failed", "details": str(e)}), 500
+
+@payments_bp.get("/payment/<payment_id>")
+def payments_fetch_payment(payment_id):
+    client = get_razorpay_client()
+    if not client:
+        return jsonify({"error": "Payment service not configured"}), 500
+    try:
+        p = client.payment.fetch(payment_id)
+        return jsonify(p)
+    except Exception as e:
+        return jsonify({"error": "Fetch payment failed", "details": str(e)}), 500
+
+@payments_bp.get("/list")
+def payments_list():
+    """
+    List Razorpay payments quickly. Query: from?, to?, count?, skip?
+    """
+    client = get_razorpay_client()
+    if not client:
+        return jsonify({"error": "Payment service not configured"}), 500
+
+    params = {}
+    for key in ("from", "to", "count", "skip"):
+        if request.args.get(key):
+            try:
+                params[key] = int(request.args.get(key))
+            except Exception:
+                pass
+    try:
+        res = client.payment.all(params)
+        return jsonify(res)
+    except Exception as e:
+        return jsonify({"error": "List payments failed", "details": str(e)}), 500
+
+@payments_bp.post("/webhook")
+def payments_webhook():
+    """
+    Razorpay webhook (optional).
+    Set RAZORPAY_WEBHOOK_SECRET in .env for signature verification.
+    """
+    payload = request.data
+    received_sig = request.headers.get("X-Razorpay-Signature")
+    if not RZP_WEBHOOK_SECRET:
+        # Accept but warn if not configured
+        current_app.logger.warning("Webhook received but RAZORPAY_WEBHOOK_SECRET not set.")
+        _persist_payment_stub("webhook", "no-secret", {"headers": dict(request.headers), "body": request.json})
+        return jsonify({"status": "ok", "warning": "no webhook secret configured"}), 200
+
+    if not received_sig:
+        return jsonify({"error": "Missing X-Razorpay-Signature"}), 400
+
+    try:
+        expected_sig = hmac.new(
+            bytes(RZP_WEBHOOK_SECRET, "utf-8"),
+            payload,
+            hashlib.sha256
+        ).hexdigest()
+
+        if not hmac.compare_digest(expected_sig, received_sig):
+            return jsonify({"error": "Invalid webhook signature"}), 400
+
+        event = request.get_json(silent=True) or {}
+        _persist_payment_stub("webhook", event.get("event", "unknown"), event)
+
+        # Optionally: Update order status based on event (payment.captured, refund.processed, etc.)
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        current_app.logger.error(f"Webhook error: {e}")
+        return jsonify({"error": "Webhook processing failed"}), 500
+
+# Register blueprint
+app.register_blueprint(payments_bp)
+
+# ---------- Backward compatibility shims ----------
+# Keep old routes working by delegating to the new logic.
+
+@app.post("/api/create-payment")
+def legacy_create_payment():
+    # Delegate to /api/payments/create-order
+    with app.test_request_context():
+        return payments_create_order()
+
+@app.post("/api/payment-success")
+def legacy_payment_success():
+    # Delegate to /api/payments/verify
+    with app.test_request_context():
+        return payments_verify_success()
 
 # ---------- SUBSCRIPTION ----------
 @app.post("/api/subscribe")
@@ -935,9 +1083,18 @@ def send_test_email():
 if __name__ == "__main__":
     print("🚀 Starting NAZMI Boutique Backend...")
     print(f"📍 Listening on http://127.0.0.1:5000  (CORS origin: {CLIENT_ORIGIN})")
+    print("🔑 Razorpay key configured:", bool(RZP_KEY and RZP_SECRET))
     print("🔍 Debug endpoints:")
     print("   - /api/debug/db")
     print("   - /api/debug/products")
     print("   - /api/debug/stock")
     print("   - /api/send-test-email")
+    print("💳 Payments endpoints:")
+    print("   - POST /api/payments/create-order")
+    print("   - POST /api/payments/verify")
+    print("   - POST /api/payments/refund")
+    print("   - GET  /api/payments/order/<order_id>")
+    print("   - GET  /api/payments/payment/<payment_id>")
+    print("   - GET  /api/payments/list")
+    print("   - POST /api/payments/webhook")
     app.run(debug=True, port=5000, host="0.0.0.0")

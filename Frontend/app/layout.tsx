@@ -1,10 +1,13 @@
-// app/layout.tsx
+// C:\NAZMI_BOUTIQUE\Frontend\app\layout.tsx
+
 import "./globals.css";
 import Header from "@/components/layout/header";
 import Footer from "@/components/layout/footer";
 import WhatsAppButton from "@/components/layout/whatsAppButton";
 import type { Metadata, Viewport } from "next";
 import { Poppins, Playfair_Display } from "next/font/google";
+import type { ReactNode } from "react";
+import Script from "next/script";
 
 /* ---- GOOGLE FONTS ---- */
 const poppins = Poppins({
@@ -114,7 +117,7 @@ export const metadata: Metadata = {
 };
 
 /* ---- ROOT LAYOUT ---- */
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html
       lang="en-IN"
@@ -174,11 +177,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               sameAs: [
                 "https://www.instagram.com/nazmiboutique/",
                 "https://www.facebook.com/nazmiboutique/",
-                "https://maps.google.com/?q=Nazmi+Boutique+Koduvally+Kozhikode"
+                "https://maps.google.com/?q=Nazmi+Boutique+Koduvally+Kozhikode",
               ],
             }),
           }}
         />
+
+        {/* Razorpay checkout.js */}
+        <Script src="https://checkout.razorpay.com/v1/checkout.js" strategy="afterInteractive" />
       </head>
 
       <body className="min-h-screen flex flex-col bg-white text-gray-900 font-sans antialiased">
